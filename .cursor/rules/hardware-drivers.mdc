@@ -23,6 +23,20 @@ The `robstride` Rust crate's `CH341Transport` handles this protocol natively. No
 - 48V nominal (currently running at 24V on bench)
 - CAN 2.0B extended frames (29-bit ID), 1 Mbps
 
+## Motor Control — MIT-Style (CRITICAL)
+**Do NOT use RunMode parameter writes (param 0x7005)** — they are silently rejected by our RS03 firmware regardless of encoding or motor state. Use MIT-style ControlCommand frames (comm_type 1) instead.
+
+`Motor::send_control(position, velocity, kp, kd, torque)` sends a single CAN frame. No RunMode changes needed. The `RobStride03Command` struct handles normalization from physical units.
+
+```
+Position hold:  send_control(target_rad, 0.0, kp=30.0, kd=1.0, 0.0)
+Velocity:       send_control(0.0, target_rads, 0.0, kd=1.0, 0.0)
+Torque:         send_control(0.0, 0.0, 0.0, 0.0, torque_nm)
+```
+
+RS03 MIT limits: angle ±4π rad, velocity ±20 rad/s, kp 0–5000, kd 0–100, torque ±60 N·m.
+Development defaults: kp=30, kd=1. Start soft (kp=5, kd=0.5) for new configs.
+
 ## Motor API Pattern
 `Motor` struct in `src/motor.rs` wraps the `robstride` crate's `Protocol` and `CH341Transport`. Multiple motors on the same CAN bus share one transport instance. The Rust crate's `Transport` trait is async (tokio), so motor methods are `async fn`. Use `impl Drop` for automatic disable on cleanup.
 
@@ -31,3 +45,5 @@ The `robstride` Rust crate's `CH341Transport` handles this protocol natively. No
 - Multiple motors MUST share one `CH341Transport` instance on the same bus
 - Always disable motors on Drop / cleanup to prevent runaway
 - MotorStudio must be CLOSED before the program can open COM5
+- CAN2USB debugger DIP switch must be in position **2** (position 1 causes hangs)
+- RunMode parameter writes are silently rejected — always use MIT-style control

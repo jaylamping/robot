@@ -31,10 +31,11 @@ The `robstride` Rust crate's `CH341Transport` handles this protocol natively.
 src/
   lib.rs               Top-level library re-exports
   config.rs            serde_yaml config loader for robot.yaml
-  motor.rs             High-level single-motor API (position, velocity, torque)
+  motor.rs             High-level single-motor API (MIT-style control)
   arm.rs               Multi-joint arm controller (shared transport across motors)
   bin/
     probe.rs           Hardware probe / connectivity smoke test
+    motor_repl.rs      Interactive motor REPL for testing/tuning
     wave_demo.rs       Arm wave demo (Phase 1 milestone)
 config/robot.yaml      CAN IDs, joint limits, physical parameters
 tests/                 Integration tests (hardware-in-the-loop)
@@ -48,10 +49,30 @@ tests/                 Integration tests (hardware-in-the-loop)
 - `anyhow` — ergonomic error handling
 
 ### Patched robstride crate (IMPORTANT)
-The upstream `robstride` crate (crates.io) has a hard dependency on `socketcan` which only compiles on Linux. This project maintains a local patched copy at `robstride-local/` with socketcan behind an optional feature flag. The `actuator` module is also made `pub` for access to `TypedFeedbackData`. If upgrading the robstride crate, re-apply these patches.
+The upstream `robstride` crate (crates.io) has a hard dependency on `socketcan` which only compiles on Linux. This project maintains a local patched copy at `robstride-local/` with socketcan behind an optional feature flag. The `actuator` module is also made `pub` for access to `TypedFeedbackData` and `TypedCommandData`. Additional patch: removed the broken RunMode special-case in `WriteCommand::to_command` and `ReadCommand::data_as_f32` (upstream encoded RunMode as raw u8 bytes instead of f32, causing silent write failures). If upgrading the robstride crate, re-apply these patches.
 
 ### Legacy Python (archived)
 The original Python implementation lives in `hw/` and `arm/` for reference. It used `python-can`, `pyserial`, and the `robstride` pip package. These files are no longer actively developed.
+
+## Motor Control — MIT-Style (CRITICAL)
+The RS03 firmware on our motors does **NOT** accept parameter-write-based RunMode changes (comm_type 0x12, param 0x7005). Writes to RunMode are silently rejected regardless of encoding (u8, f32) or motor state (enabled/disabled). All other parameter writes (gains, limits, references) work fine, but without RunMode the parameter-based control modes (position/speed/torque via Ref/SpdRef/IqRef) are inoperable.
+
+**Use MIT-style ControlCommand frames (comm_type 1) instead.** This packs position, velocity, kp, kd, and torque into a single CAN frame. The motor responds immediately — no mode switching required.
+
+```
+Position hold:  send_control(target_rad, 0.0, kp=30.0, kd=1.0, torque=0.0)
+Velocity:       send_control(0.0, target_rads, kp=0.0, kd=1.0, torque=0.0)
+Torque:         send_control(0.0, 0.0, kp=0.0, kd=0.0, torque=target_nm)
+```
+
+RS03 MIT control limits (from RobStride03Command normalization):
+- Angle: ±4π rad (~±12.57 rad)
+- Velocity: ±20 rad/s
+- KP: 0–5000
+- KD: 0–100
+- Torque: ±60 N·m
+
+Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) when testing new configurations.
 
 ## Key Facts
 - RS03 default CAN ID is **127** (not 1)
@@ -63,6 +84,8 @@ The original Python implementation lives in `hw/` and `arm/` for reference. It u
 - Multiple motors on same CAN bus MUST share one transport instance
 - Always disable motors on Drop / cleanup to prevent runaway
 - Speed limit < 10 rad/s and torque limit < 30 N·m during development
+- **Do NOT use RunMode parameter writes** — they are silently rejected by our RS03 firmware
+- CAN2USB debugger DIP switch must be in position **2** (position 1 causes hangs)
 
 ## Config
 All hardware params (CAN IDs, joint limits, COM ports) live in `config/robot.yaml`. Joint limits in radians. `null` CAN ID = not yet assigned. Loaded via `serde_yaml` into typed Rust structs.

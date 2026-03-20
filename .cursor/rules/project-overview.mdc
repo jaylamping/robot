@@ -26,9 +26,10 @@ alwaysApply: true
 - **Key crate:** `robstride` (v0.3+) — CH341Transport for CAN2USB, RS03 protocol, async API
 - **Runtime:** tokio (async, required by robstride Transport trait)
 - **Config:** `serde` + `serde_yaml` for `config/robot.yaml`
-- `src/motor.rs` — high-level single-motor API (position, velocity, torque modes)
+- `src/motor.rs` — high-level single-motor API (MIT-style control)
 - `src/arm.rs` — multi-joint arm coordination
 - `src/config.rs` — typed config deserialization
+- `src/bin/motor_repl.rs` — interactive motor REPL for testing/tuning
 - Config lives in `config/robot.yaml`
 
 ## Key Decisions Already Made
@@ -38,3 +39,5 @@ alwaysApply: true
 - MotorStudio must be closed before the program can use COM5
 - Migrated from Python to Rust (March 2026) for performance, safety, and skill development
 - The `robstride` Rust crate handles CH341 AT protocol and RS03 message construction natively
+- **MIT-style control only** — RS03 firmware rejects RunMode parameter writes; use ControlCommand frames (comm_type 1) with kp/kd/position/velocity/torque packed in a single frame
+- CAN2USB debugger DIP switch must be in position **2**
