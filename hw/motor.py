@@ -5,7 +5,7 @@ Wraps robstride.Client + RobStrideBus into a clean interface
 for controlling RS03 actuators on the robot arm.
 
 Usage:
-    from motor import Motor
+    from hw import Motor
 
     m = Motor("COM5", can_id=127)
     m.set_zero()
@@ -20,7 +20,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from robstride_bus import RobStrideBus
+from hw.robstride_bus import RobStrideBus
 from robstride import Client, RunMode
 from robstride.client import FeedbackResp, MotorMode
 

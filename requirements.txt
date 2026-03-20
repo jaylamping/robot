@@ -1,0 +1,4 @@
+python-can>=4.0
+pyserial>=3.5
+robstride>=0.1.0
+pyyaml>=6.0

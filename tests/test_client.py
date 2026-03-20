@@ -5,7 +5,7 @@ Connects to the RS03 at CAN ID 127 and exercises the full API.
 CLOSE MOTORSTUDIO BEFORE RUNNING!
 """
 
-from robstride_bus import RobStrideBus
+from hw.robstride_bus import RobStrideBus
 from robstride import Client, RunMode
 import time
 

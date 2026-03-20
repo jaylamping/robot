@@ -1,0 +1,71 @@
+# Robot hardware configuration
+# All CAN IDs, joint limits, and physical parameters in one place.
+
+bus:
+  port: COM5
+  baud: 921600
+  can_bitrate: 1000000
+  host_id: 0xAA
+
+# Actuator types
+actuators:
+  rs03:
+    max_torque: 60.0      # N*m peak
+    max_speed: 50.0       # rad/s
+    max_current: 30.0     # A
+    gear_ratio: 9.0
+    weight_kg: 0.88
+    voltage_nominal: 48   # V
+
+# Body structure
+# can_id: set per-motor after assignment
+# limits: mechanical range in radians
+
+arm_left:
+  shoulder_pitch:
+    can_id: 127           # TODO: assign final IDs
+    actuator: rs03
+    limits: [-1.57, 3.14] # -90 to 180 deg
+  shoulder_roll:
+    can_id: null
+    actuator: rs03
+    limits: [0.0, 3.14]   # 0 to 180 deg
+  upper_arm_yaw:
+    can_id: null
+    actuator: rs03
+    limits: [-1.57, 1.57] # -90 to 90 deg
+  elbow_pitch:
+    can_id: null
+    actuator: rs03
+    limits: [0.0, 2.36]   # 0 to 135 deg
+
+arm_right:
+  shoulder_pitch:
+    can_id: null
+    actuator: rs03
+    limits: [-1.57, 3.14]
+  shoulder_roll:
+    can_id: null
+    actuator: rs03
+    limits: [-3.14, 0.0]
+  upper_arm_yaw:
+    can_id: null
+    actuator: rs03
+    limits: [-1.57, 1.57]
+  elbow_pitch:
+    can_id: null
+    actuator: rs03
+    limits: [-2.36, 0.0]
+
+waist:
+  rotation:
+    can_id: null
+    actuator: openqdd      # Different actuator type
+    limits: [-1.57, 1.57]  # -90 to 90 deg
+
+head:
+  # Future: pan/tilt servos, cameras, etc.
+
+torso:
+  frame: 2020_extrusion
+  dimensions_mm: [460, 200, 160]  # height, width, depth

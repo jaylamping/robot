@@ -3,7 +3,7 @@ Quick smoke test of the high-level Motor API.
 Enables, reads state, reads voltage, then disables.
 """
 
-from motor import Motor
+from hw import Motor
 
 def main():
     print("Motor API smoke test")
