@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use robstride::{
-    Command, CommandData, EnableCommand, FeedbackFrame, MotorMode, Protocol, ReadCommand,
-    SetZeroCommand, StopCommand, TransportType, WriteCommand,
+    Command, CommandData, ControlCommand, EnableCommand, FeedbackFrame, MotorMode, Protocol,
+    ReadCommand, SetZeroCommand, StopCommand, TransportType, WriteCommand,
 };
-use robstride::actuator::TypedFeedbackData;
-use robstride::robstride03::{RobStride03Feedback, RobStride03Parameter};
+use robstride::actuator::{TypedCommandData, TypedFeedbackData};
+use robstride::robstride03::{RobStride03Command, RobStride03Feedback, RobStride03Parameter};
 use robstride::ActuatorParameter;
 use tokio::sync::Mutex;
 
@@ -78,63 +78,62 @@ impl Motor {
         Ok(())
     }
 
-    // -- Configuration --
+    // -- Motion (MIT-style control) --
 
-    pub async fn set_run_mode(&mut self, mode: u8) -> Result<()> {
-        self.write_param(RobStride03Parameter::RunMode, mode as f32).await
+    pub async fn send_control(
+        &mut self,
+        position_rad: f32,
+        velocity_rads: f32,
+        kp: f32,
+        kd: f32,
+        torque_nm: f32,
+    ) -> Result<MotorState> {
+        self.ensure_enabled().await?;
+        let typed = RobStride03Command {
+            target_angle_rad: position_rad,
+            target_velocity_rads: velocity_rads,
+            kp,
+            kd,
+            torque_nm,
+        };
+        let ctrl: ControlCommand = typed.to_control_command();
+        let (id, data) = ctrl.to_can_packet(self.can_id);
+        let fb = self.send_and_recv(id, &data).await?;
+        Ok(Self::parse_feedback(fb))
     }
 
-    pub async fn set_speed_limit(&mut self, limit_rads: f32) -> Result<()> {
-        self.write_param(RobStride03Parameter::LimitSpd, limit_rads.min(20.0)).await
+    pub async fn move_to(&mut self, position_rad: f32, kp: Option<f32>, kd: Option<f32>) -> Result<MotorState> {
+        self.send_control(
+            position_rad,
+            0.0,
+            kp.unwrap_or(30.0),
+            kd.unwrap_or(1.0),
+            0.0,
+        ).await
     }
 
-    pub async fn set_torque_limit(&mut self, limit_nm: f32) -> Result<()> {
-        self.write_param(RobStride03Parameter::LimitTorque, limit_nm.min(60.0)).await
+    pub async fn move_to_deg(&mut self, degrees: f32, kp: Option<f32>, kd: Option<f32>) -> Result<MotorState> {
+        self.move_to(degrees.to_radians(), kp, kd).await
     }
 
-    pub async fn set_position_gain(&mut self, kp: f32) -> Result<()> {
-        self.write_param(RobStride03Parameter::LocKp, kp).await
+    pub async fn spin(&mut self, velocity_rads: f32, kd: Option<f32>) -> Result<MotorState> {
+        self.send_control(
+            0.0,
+            velocity_rads.clamp(-10.0, 10.0),
+            0.0,
+            kd.unwrap_or(1.0),
+            0.0,
+        ).await
     }
 
-    pub async fn set_speed_gain(&mut self, kp: f32, ki: f32) -> Result<()> {
-        self.write_param(RobStride03Parameter::SpdKp, kp).await?;
-        self.write_param(RobStride03Parameter::SpdKi, ki).await
-    }
-
-    // -- Motion --
-
-    pub async fn move_to(&mut self, position_rad: f32, speed_limit: Option<f32>) -> Result<()> {
-        if self.enabled {
-            self.disable().await?;
-        }
-        self.set_run_mode(1).await?;
-        if let Some(limit) = speed_limit {
-            self.set_speed_limit(limit).await?;
-        }
-        self.enable().await?;
-        self.write_param(RobStride03Parameter::Ref, position_rad).await
-    }
-
-    pub async fn move_to_deg(&mut self, degrees: f32, speed_limit: Option<f32>) -> Result<()> {
-        self.move_to(degrees.to_radians(), speed_limit).await
-    }
-
-    pub async fn spin(&mut self, velocity_rads: f32) -> Result<()> {
-        if self.enabled {
-            self.disable().await?;
-        }
-        self.set_run_mode(2).await?;
-        self.enable().await?;
-        self.write_param(RobStride03Parameter::SpdRef, velocity_rads).await
-    }
-
-    pub async fn set_torque(&mut self, torque_nm: f32) -> Result<()> {
-        if self.enabled {
-            self.disable().await?;
-        }
-        self.set_run_mode(3).await?;
-        self.enable().await?;
-        self.write_param(RobStride03Parameter::IqRef, torque_nm).await
+    pub async fn set_torque(&mut self, torque_nm: f32) -> Result<MotorState> {
+        self.send_control(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            torque_nm.clamp(-30.0, 30.0),
+        ).await
     }
 
     // -- Telemetry --
@@ -191,6 +190,13 @@ impl Motor {
 
     // -- Helpers --
 
+    async fn ensure_enabled(&mut self) -> Result<()> {
+        if !self.enabled {
+            self.enable().await?;
+        }
+        Ok(())
+    }
+
     pub async fn wait_until_at(
         &mut self,
         target_rad: f32,
@@ -209,7 +215,7 @@ impl Motor {
     }
 
 
-    async fn write_param(&mut self, param: RobStride03Parameter, value: f32) -> Result<()> {
+    pub async fn write_param(&mut self, param: RobStride03Parameter, value: f32) -> Result<()> {
         let meta = param.metadata();
         if self.debug {
             eprintln!("  WRITE param 0x{:04X} '{}' = {} (type={:?})",

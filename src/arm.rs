@@ -49,11 +49,13 @@ impl Arm {
         &mut self,
         joint_name: &str,
         position_rad: f32,
-        speed_limit: Option<f32>,
+        kp: Option<f32>,
+        kd: Option<f32>,
     ) -> Result<()> {
         let motor = self.motors.get_mut(joint_name)
             .ok_or_else(|| anyhow::anyhow!("Joint '{}' not configured", joint_name))?;
-        motor.move_to(position_rad, speed_limit).await
+        motor.move_to(position_rad, kp, kd).await?;
+        Ok(())
     }
 
     pub async fn get_joint_positions(&mut self) -> Result<HashMap<String, f32>> {

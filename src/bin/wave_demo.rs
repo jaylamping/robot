@@ -35,23 +35,21 @@ async fn main() -> Result<()> {
 }
 
 async fn wave_sequence(arm: &mut Arm) -> Result<()> {
-    let speed = Some(5.0_f32);
-
     for cycle in 1..=3 {
         println!("Wave cycle {}/3", cycle);
 
-        arm.set_joint("shoulder_pitch", 1.0, speed).await?;
+        arm.set_joint("shoulder_pitch", 1.0, None, None).await?;
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        arm.set_joint("shoulder_pitch", 0.5, speed).await?;
+        arm.set_joint("shoulder_pitch", 0.5, None, None).await?;
         tokio::time::sleep(Duration::from_millis(800)).await;
 
-        arm.set_joint("shoulder_pitch", 1.0, speed).await?;
+        arm.set_joint("shoulder_pitch", 1.0, None, None).await?;
         tokio::time::sleep(Duration::from_millis(800)).await;
     }
 
     println!("Returning to zero...");
-    arm.set_joint("shoulder_pitch", 0.0, speed).await?;
+    arm.set_joint("shoulder_pitch", 0.0, None, None).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let positions = arm.get_joint_positions().await?;

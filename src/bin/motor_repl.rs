@@ -59,23 +59,28 @@ enum Action {
 async fn handle_command(motor: &mut Motor, parts: &[&str]) -> Result<Action> {
     match parts[0] {
         "help" | "h" | "?" => {
-            println!("  enable          Enable the motor");
-            println!("  disable         Disable the motor");
-            println!("  status          Read and print motor state");
-            println!("  pos <deg>       Move to position (degrees)");
-            println!("  spin <rad/s>    Velocity mode");
-            println!("  torque <N·m>    Torque mode");
-            println!("  zero            Set current position as zero");
-            println!("  voltage         Read bus voltage");
-            println!("  gains <kp>      Set position Kp");
-            println!("  spdgains <kp> <ki>  Set speed Kp/Ki");
-            println!("  spdlim <rad/s>  Set speed limit");
-            println!("  trqlim <N·m>    Set torque limit");
-            println!("  params          Read back all key motor parameters");
-            println!("  hold            Hold current position (position mode)");
-            println!("  sweep <deg> <n> Sweep ±deg for n cycles at 3 rad/s");
-            println!("  debug           Toggle hex frame logging");
-            println!("  quit / q        Disable motor and exit");
+            println!("  MIT-style control (single-frame, no RunMode needed):");
+            println!("  pos <deg> [kp] [kd]  Position hold (default kp=30 kd=1)");
+            println!("  spin <rad/s> [kd]    Velocity mode (default kd=1)");
+            println!("  torque <N·m>         Direct torque (clamped ±30)");
+            println!("  ctrl <pos> <vel> <kp> <kd> <trq>  Raw MIT control");
+            println!();
+            println!("  Lifecycle:");
+            println!("  enable               Enable the motor");
+            println!("  disable              Disable the motor");
+            println!("  zero                 Set current position as zero");
+            println!();
+            println!("  Telemetry:");
+            println!("  status               Read motor state");
+            println!("  voltage              Read bus voltage");
+            println!("  params               Read all key parameters");
+            println!();
+            println!("  Sequences:");
+            println!("  hold                 Hold current position");
+            println!("  sweep <deg> <n>      Sweep ±deg for n cycles");
+            println!();
+            println!("  debug                Toggle hex frame logging");
+            println!("  quit / q             Disable motor and exit");
         }
 
         "debug" | "d" => {
@@ -99,29 +104,35 @@ async fn handle_command(motor: &mut Motor, parts: &[&str]) -> Result<Action> {
         }
 
         "pos" | "p" => {
-            let deg = parse_f32(parts, 1, "pos <degrees>")?;
-            motor.move_to_deg(deg, Some(5.0)).await?;
-            println!("  Moving to {:.1}°  (speed limit 5 rad/s)", deg);
+            let deg = parse_f32(parts, 1, "pos <degrees> [kp] [kd]")?;
+            let kp = parts.get(2).and_then(|s| s.parse().ok());
+            let kd = parts.get(3).and_then(|s| s.parse().ok());
+            let state = motor.move_to_deg(deg, kp, kd).await?;
+            println!("  -> pos={:.1}°  vel={:.3} rad/s  trq={:.3} N·m",
+                state.angle_rad.to_degrees(), state.velocity_rads, state.torque_nm);
         }
 
         "spin" | "v" => {
-            let vel = parse_f32(parts, 1, "spin <rad/s>")?;
-            let vel = vel.clamp(-10.0, 10.0);
-            motor.spin(vel).await?;
-            println!("  Spinning at {:.2} rad/s", vel);
+            let vel = parse_f32(parts, 1, "spin <rad/s> [kd]")?;
+            let kd = parts.get(2).and_then(|s| s.parse().ok());
+            let state = motor.spin(vel, kd).await?;
+            println!("  -> vel={:.3} rad/s  trq={:.3} N·m", state.velocity_rads, state.torque_nm);
         }
 
         "torque" | "t" => {
             let trq = parse_f32(parts, 1, "torque <N·m>")?;
-            let trq = trq.clamp(-30.0, 30.0);
-            motor.set_torque(trq).await?;
-            println!("  Torque set to {:.2} N·m", trq);
+            let state = motor.set_torque(trq).await?;
+            println!("  -> trq={:.3} N·m", state.torque_nm);
         }
 
-        "mode" | "m" => {
-            let mode = parse_f32(parts, 1, "mode <0-3>")?;
-            motor.set_run_mode(mode as u8).await?;
-            println!("  RunMode set to {}", mode as u8);
+        "ctrl" => {
+            let pos = parse_f32(parts, 1, "ctrl <pos_rad> <vel> <kp> <kd> <torque>")?;
+            let vel = parse_f32(parts, 2, "ctrl <pos_rad> <vel> <kp> <kd> <torque>")?;
+            let kp  = parse_f32(parts, 3, "ctrl <pos_rad> <vel> <kp> <kd> <torque>")?;
+            let kd  = parse_f32(parts, 4, "ctrl <pos_rad> <vel> <kp> <kd> <torque>")?;
+            let trq = parse_f32(parts, 5, "ctrl <pos_rad> <vel> <kp> <kd> <torque>")?;
+            let state = motor.send_control(pos, vel, kp, kd, trq).await?;
+            print_state(&state);
         }
 
         "zero" | "z" => {
@@ -134,48 +145,21 @@ async fn handle_command(motor: &mut Motor, parts: &[&str]) -> Result<Action> {
             println!("  Bus voltage: {:.1} V", v);
         }
 
-        "gains" => {
-            let kp = parse_f32(parts, 1, "gains <kp>")?;
-            motor.set_position_gain(kp).await?;
-            println!("  Position Kp = {:.2}", kp);
-        }
-
-        "spdgains" => {
-            let kp = parse_f32(parts, 1, "spdgains <kp> <ki>")?;
-            let ki = parse_f32(parts, 2, "spdgains <kp> <ki>")?;
-            motor.set_speed_gain(kp, ki).await?;
-            println!("  Speed Kp = {:.2}, Ki = {:.4}", kp, ki);
-        }
-
-        "spdlim" => {
-            let lim = parse_f32(parts, 1, "spdlim <rad/s>")?;
-            let lim = lim.clamp(0.1, 10.0);
-            motor.set_speed_limit(lim).await?;
-            println!("  Speed limit = {:.2} rad/s", lim);
-        }
-
-        "trqlim" => {
-            let lim = parse_f32(parts, 1, "trqlim <N·m>")?;
-            let lim = lim.clamp(0.1, 30.0);
-            motor.set_torque_limit(lim).await?;
-            println!("  Torque limit = {:.2} N·m", lim);
-        }
-
         "params" | "readparams" => {
             use robstride::robstride03::RobStride03Parameter;
             let params = [
-                ("RunMode",   RobStride03Parameter::RunMode),
-                ("Ref",       RobStride03Parameter::Ref),
-                ("LimitSpd",  RobStride03Parameter::LimitSpd),
+                ("RunMode",     RobStride03Parameter::RunMode),
+                ("Ref",         RobStride03Parameter::Ref),
+                ("LimitSpd",    RobStride03Parameter::LimitSpd),
                 ("LimitTorque", RobStride03Parameter::LimitTorque),
-                ("LimitCur",  RobStride03Parameter::LimitCur),
-                ("LocKp",     RobStride03Parameter::LocKp),
-                ("SpdKp",     RobStride03Parameter::SpdKp),
-                ("SpdKi",     RobStride03Parameter::SpdKi),
-                ("MechPos",   RobStride03Parameter::MechPos),
-                ("MechVel",   RobStride03Parameter::MechVel),
-                ("Iqf",       RobStride03Parameter::Iqf),
-                ("VBus",      RobStride03Parameter::VBus),
+                ("LimitCur",    RobStride03Parameter::LimitCur),
+                ("LocKp",       RobStride03Parameter::LocKp),
+                ("SpdKp",       RobStride03Parameter::SpdKp),
+                ("SpdKi",       RobStride03Parameter::SpdKi),
+                ("MechPos",     RobStride03Parameter::MechPos),
+                ("MechVel",     RobStride03Parameter::MechVel),
+                ("Iqf",         RobStride03Parameter::Iqf),
+                ("VBus",        RobStride03Parameter::VBus),
             ];
             for (name, param) in &params {
                 match motor.read_param(*param).await {
@@ -187,9 +171,8 @@ async fn handle_command(motor: &mut Motor, parts: &[&str]) -> Result<Action> {
 
         "hold" => {
             let state = motor.read_state().await?;
-            let current_deg = state.angle_rad.to_degrees();
-            motor.move_to_deg(current_deg, Some(5.0)).await?;
-            println!("  Holding at {:.1}° ({:.3} rad)", current_deg, state.angle_rad);
+            let state = motor.move_to(state.angle_rad, None, None).await?;
+            println!("  Holding at {:.1}° ({:.3} rad)", state.angle_rad.to_degrees(), state.angle_rad);
         }
 
         "sweep" => {
@@ -198,22 +181,27 @@ async fn handle_command(motor: &mut Motor, parts: &[&str]) -> Result<Action> {
                 .get(2)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3);
-            let speed = Some(3.0_f32);
 
             println!("  Sweeping ±{:.0}° for {} cycles...", amplitude_deg, cycles);
             for i in 1..=cycles {
-                motor.move_to_deg(amplitude_deg, speed).await?;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                for _ in 0..20 {
+                    motor.move_to_deg(amplitude_deg, None, None).await?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
                 let state = motor.read_state().await?;
                 println!("    cycle {}/{} +  pos={:.1}°", i, cycles, state.angle_rad.to_degrees());
 
-                motor.move_to_deg(-amplitude_deg, speed).await?;
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                for _ in 0..20 {
+                    motor.move_to_deg(-amplitude_deg, None, None).await?;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
                 let state = motor.read_state().await?;
                 println!("    cycle {}/{} -  pos={:.1}°", i, cycles, state.angle_rad.to_degrees());
             }
-            motor.move_to_deg(0.0, speed).await?;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            for _ in 0..16 {
+                motor.move_to_deg(0.0, None, None).await?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
             println!("  Sweep done, returned to 0°.");
         }
 
