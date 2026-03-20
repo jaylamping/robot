@@ -16,7 +16,7 @@
 - **Torso:** 460×200×160mm, 2020 extrusion, Mankk corner brackets.
 
 ## CAN2USB Serial Protocol (CRITICAL)
-The CAN2USB debugger does NOT speak SLCAN or robotell. It uses a proprietary AT-framed binary protocol we reverse-engineered:
+The CAN2USB debugger does NOT speak SLCAN or robotell. It uses a proprietary AT-framed binary protocol I reverse-engineered:
 ```
 Frame: 'A' 'T' [4-byte wire ID] [1-byte len] [data bytes] '\r' '\n'
 Wire ID encoding: (29-bit CAN arbitration ID << 3) | 0x04, big-endian
@@ -48,7 +48,7 @@ tests/                 Integration tests (hardware-in-the-loop)
 - `anyhow` — ergonomic error handling
 
 ### Patched robstride crate (IMPORTANT)
-The upstream `robstride` crate (crates.io) has a hard dependency on `socketcan` which only compiles on Linux. We maintain a local patched copy at `robstride-local/` with socketcan behind an optional feature flag. The `actuator` module is also made `pub` for access to `TypedFeedbackData`. If upgrading the robstride crate, re-apply these patches.
+The upstream `robstride` crate (crates.io) has a hard dependency on `socketcan` which only compiles on Linux. This project maintains a local patched copy at `robstride-local/` with socketcan behind an optional feature flag. The `actuator` module is also made `pub` for access to `TypedFeedbackData`. If upgrading the robstride crate, re-apply these patches.
 
 ### Legacy Python (archived)
 The original Python implementation lives in `hw/` and `arm/` for reference. It used `python-can`, `pyserial`, and the `robstride` pip package. These files are no longer actively developed.
