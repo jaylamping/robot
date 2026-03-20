@@ -19,3 +19,7 @@ path = "src/bin/probe.rs"
 [[bin]]
 name = "wave_demo"
 path = "src/bin/wave_demo.rs"
+
+[[bin]]
+name = "motor_repl"
+path = "src/bin/motor_repl.rs"

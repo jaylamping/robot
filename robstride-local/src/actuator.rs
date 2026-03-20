@@ -410,7 +410,7 @@ impl CommandData for WriteCommand {
             .unwrap_or(RobStride04Parameter::Unknown)
             == RobStride04Parameter::RunMode
         {
-            data[4] = self.data.to_le_bytes()[0];
+            data[4] = self.data as u8;
         } else {
             let le_data = self.data.to_le_bytes();
             data[4..=7].copy_from_slice(&le_data);

@@ -27,6 +27,7 @@ pub struct Motor {
     pub can_id: u8,
     host_id: u8,
     enabled: bool,
+    pub debug: bool,
 }
 
 impl Motor {
@@ -36,6 +37,7 @@ impl Motor {
             can_id,
             host_id: HOST_ID,
             enabled: false,
+            debug: false,
         }
     }
 
@@ -146,12 +148,20 @@ impl Motor {
             read_status: false,
         };
         let (id, data) = cmd.to_can_packet(self.can_id);
+        if self.debug {
+            eprintln!("  TX  id={:08X} data={:02X?}  (read param 0x{:04X} '{}')",
+                id, data, meta.index, meta.name);
+        }
         let mut proto = self.protocol.lock().await;
         proto.send(id, &data).await
             .map_err(|e| anyhow::anyhow!("{:#}", e))?;
         let (resp_id, resp_data) = proto.recv().await
             .map_err(|e| anyhow::anyhow!("{:#}", e))?;
         drop(proto);
+
+        if self.debug {
+            eprintln!("  RX  id={:08X} data={:02X?}", resp_id, &resp_data);
+        }
 
         let resp_cmd = Command::from_can_packet(resp_id, resp_data);
         let read_resp = ReadCommand::from_command(resp_cmd);
@@ -198,6 +208,10 @@ impl Motor {
 
     async fn write_param(&mut self, param: RobStride03Parameter, value: f32) -> Result<()> {
         let meta = param.metadata();
+        if self.debug {
+            eprintln!("  WRITE param 0x{:04X} '{}' = {} (type={:?})",
+                meta.index, meta.name, value, meta.param_type);
+        }
         let cmd = WriteCommand {
             host_id: self.host_id,
             parameter_index: meta.index,
@@ -209,12 +223,27 @@ impl Motor {
     }
 
     async fn send_and_recv(&self, id: u32, data: &[u8]) -> Result<FeedbackFrame> {
+        if self.debug {
+            let comm_type = (id >> 24) & 0x1F;
+            let data_2 = (id >> 8) & 0xFFFF;
+            let target = id & 0x7F;
+            eprintln!("  TX  id={:08X} [comm={} d2={:04X} tgt={}] data={:02X?}",
+                id, comm_type, data_2, target, data);
+        }
         let mut proto = self.protocol.lock().await;
         proto.send(id, data).await
             .map_err(|e| anyhow::anyhow!("{:#}", e))?;
         let (resp_id, resp_data) = proto.recv().await
             .map_err(|e| anyhow::anyhow!("{:#}", e))?;
         drop(proto);
+
+        if self.debug {
+            let comm_type = (resp_id >> 24) & 0x1F;
+            let data_2 = (resp_id >> 8) & 0xFFFF;
+            let target = resp_id & 0x7F;
+            eprintln!("  RX  id={:08X} [comm={} d2={:04X} tgt={}] data={:02X?}",
+                resp_id, comm_type, data_2, target, &resp_data);
+        }
 
         let cmd = Command::from_can_packet(resp_id, resp_data);
         let fb = FeedbackFrame::from_command(cmd);
