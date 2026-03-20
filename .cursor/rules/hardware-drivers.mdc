@@ -1,0 +1,33 @@
+---
+description: Hardware driver conventions and CAN protocol details
+globs: hw/**/*.py
+alwaysApply: false
+---
+
+# Hardware Driver Rules
+
+## CAN2USB Protocol
+The RobStride CAN2USB debugger (CH340, VID:PID 1A86:7523) speaks an AT-framed binary protocol. NOT SLCAN, NOT robotell. Frame format:
+
+```
+TX/RX: 'A' 'T' [4B wire_id] [1B len] [data...] '\r' '\n'
+wire_id = (29-bit arb_id << 3) | 0x04, big-endian
+```
+
+The `RobStrideBus` class in `robstride_bus.py` implements `can.BusABC` so it works with the `robstride` pip package's `Client` class.
+
+## RS03 Motor Specs
+- 60 N·m peak / 20 N·m rated torque
+- 50 rad/s max speed
+- 9:1 planetary gearbox, 880g
+- 48V nominal (currently running at 24V on bench)
+- CAN 2.0B extended frames (29-bit ID), 1 Mbps
+
+## Motor API Pattern
+`Motor` class in `motor.py` wraps `robstride.Client`. It owns-or-borrows a `RobStrideBus`. Multiple motors on the same CAN bus should share one bus instance (pass `bus=` parameter).
+
+## Important Gotchas
+- Windows console can't print Unicode emoji — use ASCII in print statements
+- PowerShell escaping breaks inline Python — use script files instead
+- `robstride.Client` motor_model param affects feedback scaling (model 1 vs other)
+- Always disable motors in cleanup/finally blocks to prevent runaway

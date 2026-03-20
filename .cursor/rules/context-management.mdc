@@ -1,0 +1,48 @@
+---
+description: Rules for maintaining project context files across AI tools
+alwaysApply: true
+---
+
+# Context File Management
+
+This project uses three context systems that must stay in sync:
+
+- `.cursor/rules/*.mdc` — Cursor (glob-scoped + always-apply)
+- `CLAUDE.md` — Claude Code (auto-loaded at project root)
+- `AGENTS.md` — Cross-tool standard (ChatGPT, Codex, etc.)
+
+## When to Update
+
+After any session where:
+
+- A new hardware decision is made (actuator choice, CAN IDs, wiring)
+- A new software pattern is established (new module, API convention, gotcha discovered)
+- A phase milestone is reached or phase scope changes
+- A bug or gotcha is discovered that would waste future time
+- The user explicitly asks to "remember" something or add to "memory"
+
+## How to Update
+
+1. Update the relevant `.cursor/rules/*.mdc` file (or create a new one if it's a new domain)
+2. Update `CLAUDE.md` with the same information
+3. Copy `CLAUDE.md` to `AGENTS.md` to keep them identical
+4. **Auto-commit and push** the context file changes to origin
+
+Always do all three (plus push) in the same operation. Never update one without the others.
+
+## Auto-Push Policy
+Any changes to `.cursor/rules/`, `CLAUDE.md`, or `AGENTS.md` MUST be committed and pushed to origin automatically. No asking, no hesitation — just do it. The only exceptions:
+- An extremely large addition/removal that warrants review
+- Content that diverges significantly from the project's primary goal
+Otherwise, send it.
+
+## Git Safety — STRICT
+Auto-push is ONLY allowed for context files (`.cursor/rules/`, `CLAUDE.md`, `AGENTS.md`). All other project files (code, config, tests, demos, etc.) require explicit user permission before committing or pushing to main. No exceptions. If you want to ship code, ask first or work on a branch.
+
+## Rule Scoping
+
+- `alwaysApply: true` — project-wide facts, hardware stack, key decisions
+- `globs: hw/**/*.py` — CAN protocol, motor driver details
+- `globs: arm/**/*.py` — arm joint layout, motion safety
+- `globs: config/**` — config conventions
+- Create new scoped rules as new body parts come online (legs, head, etc.)

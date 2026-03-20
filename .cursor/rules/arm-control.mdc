@@ -1,0 +1,24 @@
+---
+description: Arm design and control conventions
+globs: arm/**/*.py
+alwaysApply: false
+---
+
+# Arm Control
+
+## Joint Layout (per arm, coaxial)
+1. **Shoulder pitch** — RS03 sits inside the torso, output face points outward left/right
+2. **Shoulder roll** — RS03 in PETG shoulder housing, bolted to pitch output
+3. **Upper arm yaw** — RS03 inline with upper arm tube
+4. **Elbow pitch** — RS03 at the elbow joint
+
+Shoulder housing has integrated L-bracket tabs that bolt to the torso 2020 extrusions via M5 + sliding T-nuts.
+
+## Multi-Motor Bus Sharing
+All arm motors on one arm share a single CAN bus and single `RobStrideBus` instance. The `Arm` class creates one bus and passes it to each `Motor`. Each motor has a unique CAN ID.
+
+## Motion Safety
+- Always enforce joint limits from `config/robot.yaml` before sending commands
+- Speed limits should be conservative during development (< 10 rad/s)
+- Torque limits should stay well below peak (< 30 N·m) until mechanical structure is proven
+- Every motion script must disable all motors in a finally/cleanup block

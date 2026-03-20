@@ -1,0 +1,37 @@
+---
+description: Core project context for the humanoid robot build
+alwaysApply: true
+---
+
+# Humanoid Robot Project
+
+5-foot humanoid robot, 28-31 DOF target. Built from 2020 aluminum extrusion frame with PETG 3D-printed joint housings, driven by RobStride RS03 brushless actuators (60 N·m peak, 9:1 planetary, 48V nominal).
+
+## Phases
+- **Phase 1 (active):** Arms — 4 DOF per arm (shoulder pitch, shoulder roll, upper arm yaw, elbow pitch). Single arm wave demo is the first milestone.
+- **Phase 2:** Legs — 6 DOF per leg (hip yaw/roll/pitch, knee pitch, ankle pitch/roll).
+- **Phase 3:** Wrists & hands — 3+ DOF per side.
+- **Phase 4:** Head — 2-3 DOF (neck pan/tilt, jaw/visor).
+
+## Hardware Stack
+- **Arm actuators:** RobStride RS03 (CAN ID 127 is the first motor, IDs TBD for rest)
+- **Waist:** OpenQDD actuator
+- **CAN adapter:** RobStride CAN2USB debugger (CH340, COM5, 921600 baud)
+- **Power:** 24V/1200W bench PSU (upgrading to 48V battery for mobile)
+- **CAN buses:** Standard CAN at 1 Mbps for RS03s, CAN-FD for Moteus controllers (mjcanfd-usb)
+- **Torso:** 460×200×160mm, 2020 extrusion with Mankk corner brackets
+
+## Software Stack
+- Python 3.13 on Windows
+- `hw/robstride_bus.py` — custom python-can Bus for the CAN2USB's AT serial protocol
+- `hw/motor.py` — high-level single-motor API (position, velocity, torque modes)
+- `arm/arm.py` — multi-joint arm coordination
+- `robstride` pip package — low-level CAN message construction (third-party)
+- Config lives in `config/robot.yaml`
+
+## Key Decisions Already Made
+- CAN2USB uses AT-framed serial: `'AT' [wire_id<<3|0x04, 4B BE] [len] [data] '\r\n'` at 921600 baud
+- Motor model parameter in robstride.Client feedback parsing affects velocity/torque scaling ranges
+- RS03 default CAN ID is 127 (not 1)
+- Host CAN ID is 0xAA
+- MotorStudio must be closed before Python can use COM5
