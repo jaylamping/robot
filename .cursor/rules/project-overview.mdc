@@ -41,6 +41,17 @@ alwaysApply: true
 - **`link/`** — React frontend (Vite + TanStack Router + Tailwind)
 - Config lives in `config/robot.yaml`
 
+## Link Frontend
+- React 19, Vite, TypeScript, TanStack Router, Zustand, Recharts, Tailwind CSS 4
+- "Link" is the primary interaction layer with the robot, not just a dashboard
+- Dev: `cargo run -p link-server --bin link -- --no-hardware` for mock telemetry, `cd link && npm run dev` for HMR
+- Production: `cd link && npm run build`, then `link` binary serves from `link/dist/`
+- Status: scaffolded and functional but UI needs polish — active work area
+
+## Deployment
+- Current: Windows dev machine (COM5), `--no-hardware` for frontend-only dev
+- Future: Raspberry Pi 5, Ubuntu, SocketCAN, Tailscale for remote access (NOT set up yet)
+
 ## Key Decisions Already Made
 - CAN2USB uses AT-framed serial: `'AT' [wire_id<<3|0x04, 4B BE] [len] [data] '\r\n'` at 921600 baud
 - RS03 default CAN ID is 127 (not 1)
@@ -50,3 +61,6 @@ alwaysApply: true
 - The `robstride` Rust crate handles CH341 AT protocol and RS03 message construction natively
 - **MIT-style control only** — RS03 firmware rejects RunMode parameter writes; use ControlCommand frames (comm_type 1) with kp/kd/position/velocity/torque packed in a single frame
 - CAN2USB debugger DIP switch must be in position **2**
+- REST for commands, WebTransport datagrams for real-time telemetry (no WebSockets)
+- Frontend served from the robot itself (not cloud-hosted)
+- Repo is a Cargo workspace — use `cortex::` for imports, not `robot::`

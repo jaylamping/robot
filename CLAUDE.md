@@ -101,13 +101,36 @@ Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) w
 - **Do NOT use RunMode parameter writes** — they are silently rejected by our RS03 firmware
 - CAN2USB debugger DIP switch must be in position **2** (position 1 causes hangs)
 
+## Link Frontend (React)
+The `link/` directory is a React app — the primary interaction layer between the user and the robot (not just a "dashboard").
+
+**Stack:** Vite, React 19, TypeScript, TanStack Router (file-based), Zustand (state), Recharts (charts), Tailwind CSS 4.
+
+**Key files:**
+- `link/src/routes/index.tsx` — home page, motor card grid
+- `link/src/routes/motor.$id.tsx` — per-motor detail/control page
+- `link/src/components/MotorCard.tsx` — motor status card
+- `link/src/components/MotorControl.tsx` — enable/disable/move/control panel
+- `link/src/components/TelemetryChart.tsx` — real-time time-series plot
+- `link/src/stores/telemetry.ts` — Zustand store for WebTransport telemetry
+- `link/src/hooks/useWebTransport.ts` — WebTransport connection hook
+- `link/src/lib/api.ts` — REST API client functions
+
+**Dev workflow:** `cargo run -p link-server --bin link -- --no-hardware` starts the server with mock telemetry on http://localhost:8080. Run `cd link && npm run dev` for Vite HMR on port 5173 (proxied to 8080). For production, `cd link && npm run build` then the `link` binary serves the built frontend from `link/dist/`.
+
+**Status:** Scaffolded and functional but UI is bare — motor cards, telemetry chart, and control panel exist but need polish. This is the current active work area.
+
+## Deployment
+- **Current:** Everything runs on the Windows dev machine (COM5 for CAN2USB). Use `--no-hardware` for frontend-only development.
+- **Future:** Raspberry Pi 5 on the robot, running Ubuntu with SocketCAN. The `robstride-local` crate already has the `socketcan` feature flag ready. Mesh VPN (Tailscale) planned for remote access. Pi is NOT set up yet — not a blocker for current work.
+
 ## Config
 All hardware params (CAN IDs, joint limits, COM ports) live in `config/robot.yaml`. Joint limits in radians. `null` CAN ID = not yet assigned. Loaded via `serde_yaml` into typed Rust structs.
 
 ## Rust Environment
-- Rust stable toolchain (MSVC target on Windows)
-- Build: `cargo build`, `cargo run --bin probe`, etc.
-- Dependencies managed via `Cargo.toml`
+- Rust stable toolchain (MSVC target on Windows, will also target aarch64-linux for Pi)
+- Build: `cargo build`, `cargo run -p cortex --bin probe`, `cargo run -p link-server --bin link`, etc.
+- Dependencies managed via workspace `Cargo.toml` + per-crate `Cargo.toml`
 
 ## Context File Maintenance
 This project keeps context in three places that MUST stay in sync:
