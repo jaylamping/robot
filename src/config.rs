@@ -120,6 +120,15 @@ fn default_post_stall_motion_scale() -> f64 {
     0.5
 }
 
+/// Below this linear distance to target, stall detection is off (final creep is slow and reads like a stall).
+fn default_stall_detection_min_linear_error_rad() -> f64 {
+    0.26
+}
+
+fn default_recovery_direct_command_within_rad() -> f64 {
+    0.12
+}
+
 /// When |position − home| exceeds `large_error_rad` at startup: optional **fast approach** toward
 /// home, then **gradual** small steps. If torque stays high while velocity is near zero (stall /
 /// contact), the joint holds, waits `resistance_backoff_ms`, then **continues** the same routine
@@ -173,10 +182,19 @@ pub struct StartupRecoveryConfig {
     /// (e.g. 0.5 for “half speed / torque”).
     #[serde(default = "default_post_stall_motion_scale")]
     pub post_stall_motion_scale: f64,
-    /// When linear `|target−pos| > π`, step direction uses the shortest arc; settle/trigger always use
-    /// linear error. Set false to always step along linear encoder error.
+    /// When unbounded and linear `|target−pos| > π`, step direction may use the shortest arc.
+    /// Ignored when joint limits are supplied (arm always uses linear steps). Set false to always
+    /// use linear delta for unbounded recovery.
     #[serde(default = "default_true")]
     pub prefer_shortest_angle: bool,
+    /// Stall/resistance logic runs only while linear `|target−pos| ≥` this. Nearer than that, low
+    /// velocity + moderate torque is normal “creeping home” and would false-trigger.
+    #[serde(default = "default_stall_detection_min_linear_error_rad")]
+    pub stall_detection_min_linear_error_rad: f64,
+    /// In gradual recovery, when linear `|target−pos|` is below this but above settle tolerance,
+    /// command `target` directly each cycle (soft gains) instead of only `pos±step` — helps stiction.
+    #[serde(default = "default_recovery_direct_command_within_rad")]
+    pub recovery_direct_command_within_rad: f64,
 }
 
 impl Default for StartupRecoveryConfig {
@@ -202,6 +220,8 @@ impl Default for StartupRecoveryConfig {
             resistance_backoff_ms: default_resistance_backoff_ms(),
             post_stall_motion_scale: default_post_stall_motion_scale(),
             prefer_shortest_angle: default_true(),
+            stall_detection_min_linear_error_rad: default_stall_detection_min_linear_error_rad(),
+            recovery_direct_command_within_rad: default_recovery_direct_command_within_rad(),
         }
     }
 }
@@ -211,9 +231,16 @@ pub struct JointConfig {
     pub can_id: Option<u8>,
     pub actuator: String,
     pub limits: (f64, f64),
-    /// Command-space “home” used for startup distance checks (radians).
+    /// Joint angle (rad) when this link points **straight down** for this actuator placement — a
+    /// fixed geometry constant (from CAD / one-time calibration), not something that drifts per boot.
+    /// Startup recovery and “return home” target this value.
     #[serde(default = "default_home_rad")]
     pub home_rad: f64,
+    /// If true: before enable, `set_zero` with the joint held at straight down so encoder 0 = down;
+    /// `home_rad` is then ignored (forced to 0). Use for teach-at-power-up. If down is already a
+    /// known `home_rad` in encoder space, leave this false.
+    #[serde(default)]
+    pub straight_down_home_at_startup: bool,
     #[serde(default)]
     pub startup_recovery: StartupRecoveryConfig,
 }

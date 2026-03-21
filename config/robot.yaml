@@ -20,13 +20,18 @@ actuators:
 # Body structure
 # can_id: set per-motor after assignment
 # limits: mechanical range in radians
+#
+# For this torso-mounted layout, “straight down” is a fixed angle per joint in this frame — set
+# home_rad to that value (CAD / calibration). straight_down_home_at_startup only if you want each
+# run to SetZero while physically holding straight down (forces home to 0 after zero).
 
 arm_left:
   shoulder_pitch:
     can_id: 127           # TODO: assign final IDs
     actuator: rs03
     limits: [-1.57, 3.14] # -90 to 180 deg
-    # home_rad: 0.0       # optional; default 0 — used for “far from home” at startup
+    home_rad: 0.0         # rad when upper arm points straight down for this mount (change if your zero convention differs)
+    straight_down_home_at_startup: false
     # startup_recovery:   # optional; see defaults in config.rs
     #   approach_enabled: true
     #   approach_max_step_rad: 0.12
@@ -41,6 +46,8 @@ arm_left:
     #   resistance_backoff_ms: 1000   # (alias resistance_hold_ms)
     #   post_stall_motion_scale: 0.5
     #   prefer_shortest_angle: true   # shortest arc only if linear error > π; settle stays linear
+    #   stall_detection_min_linear_error_rad: 0.26
+    #   recovery_direct_command_within_rad: 0.12  # gradual: soft hold on home in this band
   shoulder_roll:
     can_id: null
     actuator: rs03

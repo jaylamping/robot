@@ -35,13 +35,19 @@ fn linear_error(pos_rad: f32, target_rad: f32) -> f32 {
     target_rad - pos_rad
 }
 
-/// Step direction toward target. Shortest arc is used only when linear error is huge (`> π`) so we
-/// don’t take the long way, while small circular error can’t falsely claim “at home” on limited joints.
+/// Step direction toward target. With **bounded** joints (`joint_limits` in use), always linear —
+/// shortest arc is wrong for a limited range and can command a ~270° wrap the mechanics can’t mean.
+/// Otherwise, shortest arc only when linear error `> π` and `prefer_shortest_angle`.
 #[inline]
-fn step_delta_toward_home(pos_rad: f32, target_rad: f32, prefer_shortest_angle: bool) -> f32 {
+fn step_delta_toward_home(
+    pos_rad: f32,
+    target_rad: f32,
+    prefer_shortest_angle: bool,
+    bounded_joint: bool,
+) -> f32 {
     use std::f32::consts::PI;
     let linear = linear_error(pos_rad, target_rad);
-    if !prefer_shortest_angle || linear.abs() <= PI {
+    if bounded_joint || !prefer_shortest_angle || linear.abs() <= PI {
         linear
     } else {
         shortest_angle_err(pos_rad, target_rad)
@@ -113,6 +119,38 @@ impl Motor {
         Ok(())
     }
 
+    /// If the encoder position is more than `threshold_rad` (default: 2π) from `target_rad`,
+    /// issue a `set_zero` to collapse accumulated multi-turn offset, then return the new
+    /// effective position (which will be near 0). The caller should adjust `target_rad`
+    /// accordingly (new target = old target − old position, i.e. the residual after zeroing).
+    ///
+    /// Returns `Some(residual_target)` if normalization happened, `None` if position was fine.
+    pub async fn normalize_multiturn(
+        &mut self,
+        target_rad: f32,
+        threshold_rad: f32,
+    ) -> Result<Option<f32>> {
+        use std::f32::consts::TAU;
+        let threshold = if threshold_rad > 0.0 { threshold_rad } else { TAU };
+        let pos = self.read_position().await?;
+        let err = (pos - target_rad).abs();
+        if err <= threshold {
+            return Ok(None);
+        }
+
+        // The motor output can't physically have spun multiple turns within joint limits.
+        // The multi-turn encoder just accumulated revolutions from REPL spinning / free run.
+        // set_zero redefines current physical position as 0.
+        self.set_zero().await?;
+
+        // After set_zero, encoder reads ~0. The real target relative to the new zero is
+        // whatever offset home was from the old position — but because the gearbox output
+        // position didn't really change, the residual is just (target - pos) wrapped to
+        // the nearest equivalent within ±π.
+        let residual = shortest_angle_err(0.0, target_rad - pos);
+        Ok(Some(residual))
+    }
+
     // -- Motion (MIT-style control) --
 
     pub async fn send_control(
@@ -165,9 +203,11 @@ impl Motor {
 
     /// If linear `|target − position|` exceeds `large_error_rad`, runs optional **approach** then
     /// **gradual** steps. Settle and handoff use **linear** error so wrap‑around never pretends the
-    /// joint reached home. When `prefer_shortest_angle` and linear error `> π`, step direction uses
-    /// the shortest arc; otherwise steps follow linear error. Commands clamp to `joint_limits_rad`.
-    /// On stall (high torque, low velocity): hold,
+    /// joint reached home. Bounded joints (`joint_limits_rad: Some`) always step linearly; otherwise
+    /// shortest arc may apply when linear error `> π` and `prefer_shortest_angle`.
+    /// Commands clamp to limits; inside `recovery_direct_command_within_rad`, gradual phase commands
+    /// home directly with soft gains (stiction).
+    /// On stall (high torque, low velocity, and linear error not inside the near-goal floor): hold,
     /// **back off** for `resistance_backoff_ms`, then **continue** with `post_stall_motion_scale`
     /// applied to steps and gains for the rest of this recovery.
     ///
@@ -181,7 +221,9 @@ impl Motor {
     ) -> Result<u32> {
         let large_error_rad = cfg.large_error_rad as f32;
         let pos0 = self.read_position().await?;
+        let bounded_joint = joint_limits_rad.is_some();
         let use_short = cfg.prefer_shortest_angle;
+        let direct_within = cfg.recovery_direct_command_within_rad as f32;
         if linear_error(pos0, target_rad).abs() <= large_error_rad {
             return Ok(0);
         }
@@ -199,6 +241,7 @@ impl Motor {
         let trip_vel = cfg.resistance_velocity_rads;
         let confirm = cfg.resistance_confirm_ticks.max(1);
         let backoff = Duration::from_millis(cfg.resistance_backoff_ms);
+        let stall_min_err = cfg.stall_detection_min_linear_error_rad as f32;
 
         let start = Instant::now();
         let approach_limit = Duration::from_secs_f64(cfg.approach_max_secs);
@@ -212,10 +255,16 @@ impl Motor {
             let a_period = Duration::from_millis(cfg.approach_step_period_ms);
 
             let mut resistance_streak = 0u32;
+            let mut prev_linear_mag = f32::INFINITY;
 
             while start.elapsed() < timeout && start.elapsed() < approach_limit {
                 let pos = self.read_position().await?;
                 let linear_mag = linear_error(pos, target_rad).abs();
+                if linear_mag + 0.002 < prev_linear_mag {
+                    resistance_streak = 0;
+                }
+                prev_linear_mag = linear_mag;
+
                 if linear_mag < settle_tolerance_rad {
                     return Ok(stall_backoffs);
                 }
@@ -227,15 +276,17 @@ impl Motor {
                 let kp_a = cfg.approach_kp * motion_scale;
                 let kd_a = cfg.approach_kd * motion_scale;
 
-                let delta = step_delta_toward_home(pos, target_rad, use_short);
+                let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
                 let step = delta.clamp(-a_step, a_step);
                 let cmd_pos = clamp_cmd_to_limits(pos + step, joint_limits_rad);
                 let state = self
                     .send_control(cmd_pos, 0.0, kp_a, kd_a, 0.0)
                     .await?;
 
-                let looks_blocked =
-                    state.torque_nm.abs() >= trip_tau && state.velocity_rads.abs() <= trip_vel;
+                let stall_eligible = linear_mag >= stall_min_err;
+                let looks_blocked = stall_eligible
+                    && state.torque_nm.abs() >= trip_tau
+                    && state.velocity_rads.abs() <= trip_vel;
                 if looks_blocked {
                     resistance_streak += 1;
                     if resistance_streak >= confirm {
@@ -263,16 +314,28 @@ impl Motor {
         }
 
         let mut resistance_streak = 0u32;
+        let mut prev_linear_mag = f32::INFINITY;
         while start.elapsed() < timeout {
             let pos = self.read_position().await?;
-            if linear_error(pos, target_rad).abs() < settle_tolerance_rad {
+            let linear_mag = linear_error(pos, target_rad).abs();
+            if linear_mag + 0.002 < prev_linear_mag {
+                resistance_streak = 0;
+            }
+            prev_linear_mag = linear_mag;
+
+            if linear_mag < settle_tolerance_rad {
                 return Ok(stall_backoffs);
             }
 
             let cap = max_step_rad * motion_scale;
-            let delta = step_delta_toward_home(pos, target_rad, use_short);
-            let step = delta.clamp(-cap, cap);
-            let cmd_pos = clamp_cmd_to_limits(pos + step, joint_limits_rad);
+            let cmd_pos = if linear_mag <= direct_within {
+                clamp_cmd_to_limits(target_rad, joint_limits_rad)
+            } else {
+                let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
+                let step = delta.clamp(-cap, cap);
+                clamp_cmd_to_limits(pos + step, joint_limits_rad)
+            };
+
             let state = self
                 .send_control(
                     cmd_pos,
@@ -283,8 +346,10 @@ impl Motor {
                 )
                 .await?;
 
-            let looks_blocked =
-                state.torque_nm.abs() >= trip_tau && state.velocity_rads.abs() <= trip_vel;
+            let stall_eligible = linear_mag >= stall_min_err;
+            let looks_blocked = stall_eligible
+                && state.torque_nm.abs() >= trip_tau
+                && state.velocity_rads.abs() <= trip_vel;
             if looks_blocked {
                 resistance_streak += 1;
                 if resistance_streak >= confirm {
@@ -515,14 +580,20 @@ mod shortest_angle_tests {
     #[test]
     fn step_delta_uses_linear_when_error_below_pi() {
         use std::f32::consts::FRAC_PI_2;
-        let d = super::step_delta_toward_home(FRAC_PI_2, 0.0, true);
+        let d = super::step_delta_toward_home(FRAC_PI_2, 0.0, true, false);
         assert!((d - (-FRAC_PI_2)).abs() < 1e-5);
     }
 
     #[test]
     fn step_delta_uses_short_wrap_when_linear_huge() {
-        let d = super::step_delta_toward_home(6.1, 0.17, true);
+        let d = super::step_delta_toward_home(6.1, 0.17, true, false);
         assert!(d.abs() < 1.0, "expected short arc, got {}", d);
+    }
+
+    #[test]
+    fn step_delta_bounded_joint_always_linear_even_if_huge() {
+        let d = super::step_delta_toward_home(6.1, 0.17, true, true);
+        assert!((d - (0.17 - 6.1)).abs() < 1e-4);
     }
 }
 

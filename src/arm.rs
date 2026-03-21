@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use robstride::Protocol;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::{ArmConfig, StartupRecoveryConfig};
 use crate::motor::Motor;
@@ -21,6 +21,7 @@ struct JointStartupParams {
     limit_min_rad: f32,
     limit_max_rad: f32,
     recovery: StartupRecoveryConfig,
+    straight_down_home_at_startup: bool,
 }
 
 pub struct Arm {
@@ -35,13 +36,28 @@ impl Arm {
 
         for (name, joint) in config.joints() {
             if let Some(can_id) = joint.can_id {
+                let straight_down = joint.straight_down_home_at_startup;
+                let home_rad = if straight_down {
+                    if joint.home_rad.abs() > 1e-9 {
+                        warn!(
+                            joint = name,
+                            yaml_home_rad = joint.home_rad,
+                            "straight_down_home_at_startup: ignoring YAML home_rad; home is 0 after set_zero"
+                        );
+                    }
+                    0.0
+                } else {
+                    joint.home_rad as f32
+                };
+
                 joint_startup.insert(
                     name.to_string(),
                     JointStartupParams {
-                        home_rad: joint.home_rad as f32,
+                        home_rad,
                         limit_min_rad: joint.limits.0 as f32,
                         limit_max_rad: joint.limits.1 as f32,
                         recovery: joint.startup_recovery.clone(),
+                        straight_down_home_at_startup: straight_down,
                     },
                 );
                 motors.insert(
@@ -60,18 +76,40 @@ impl Arm {
     /// After enable, any joint farther than `startup_recovery.large_error_rad` from `home_rad`
     /// runs recovery: optional fast approach, then gradual steps; stall detection runs in both
     /// phases. See [`StartupRecoverySummary`] for whether any obstruction was seen.
+    ///
+    /// If the encoder has accumulated multi-turn offset (e.g. from free spinning in the REPL),
+    /// the position is normalized via `set_zero` first so recovery doesn't walk through dozens
+    /// of phantom revolutions.
     pub async fn startup_safe_recovery(&mut self) -> Result<StartupRecoverySummary> {
+        use std::f32::consts::TAU;
         let mut stall_backoffs = 0u32;
-        for (name, motor) in &mut self.motors {
+
+        let joint_names: Vec<String> = self.motors.keys().cloned().collect();
+        for name in &joint_names {
             let params = self
                 .joint_startup
-                .get(name)
+                .get(name.as_str())
                 .ok_or_else(|| anyhow::anyhow!("internal: joint '{}' has motor but no startup params", name))?;
-            let r = &params.recovery;
-            let home = params.home_rad;
+            let r = params.recovery.clone();
+            let mut home = params.home_rad;
+            let limits = (params.limit_min_rad, params.limit_max_rad);
+
+            let motor = self.motors.get_mut(name.as_str()).unwrap();
+
+            // Collapse accumulated multi-turn encoder offset before recovery.
+            // The gearbox output can't physically exceed one revolution within joint limits,
+            // so anything beyond 2pi from home is phantom accumulation from REPL spinning.
+            if let Some(new_home) = motor.normalize_multiturn(home, TAU).await? {
+                info!(
+                    joint = %name,
+                    new_home_rad = %format_args!("{:.3}", new_home),
+                    "encoder had multi-turn accumulation; re-zeroed, recovery target adjusted"
+                );
+                home = new_home;
+            }
+
             let large = r.large_error_rad as f32;
             let pos = motor.read_position().await?;
-            // Linear only: circular “short” error must not skip recovery on a limited joint.
             let err_mag = (pos - home).abs();
             if err_mag <= large {
                 continue;
@@ -84,12 +122,35 @@ impl Arm {
                 "joint far from home; running startup recovery (approach + gradual)"
             );
 
-            let limits = (params.limit_min_rad, params.limit_max_rad);
             stall_backoffs += motor
-                .recover_position_if_far(home, r, Some(limits))
+                .recover_position_if_far(home, &r, Some(limits))
                 .await?;
         }
         Ok(StartupRecoverySummary { stall_backoffs })
+    }
+
+    /// Call **before** [`enable_all`] for any joint with `straight_down_home_at_startup: true` in YAML.
+    /// Physically hold that joint **straight down**, then this runs drive [`Motor::set_zero`] so
+    /// mechanical angle 0 = that pose. Startup recovery then uses `home_rad == 0`.
+    /// Returns how many motors received `set_zero`.
+    pub async fn straight_down_home_before_enable(&mut self) -> Result<usize> {
+        let mut n = 0usize;
+        for (name, motor) in &mut self.motors {
+            let params = self
+                .joint_startup
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("internal: joint '{}' has no startup params", name))?;
+            if !params.straight_down_home_at_startup {
+                continue;
+            }
+            info!(
+                joint = %name,
+                "SetZero -- joint must be straight down; defining mech position 0 as home"
+            );
+            motor.set_zero().await?;
+            n += 1;
+        }
+        Ok(n)
     }
 
     pub async fn enable_all(&mut self) -> Result<()> {
@@ -132,5 +193,10 @@ impl Arm {
 
     pub fn joint_names(&self) -> Vec<&str> {
         self.motors.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Startup / recovery home angle for this joint (rad), after `straight_down_home_at_startup` override.
+    pub fn configured_home_rad(&self, joint_name: &str) -> Option<f32> {
+        self.joint_startup.get(joint_name).map(|p| p.home_rad)
     }
 }
