@@ -85,7 +85,7 @@ function SystemPage() {
         </CardHeader>
         <CardContent>
           {!systemTelemetry ? (
-            <p className="text-sm text-muted-foreground">Waiting for system telemetry...</p>
+            <TelemetryLoading />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Metric
@@ -207,6 +207,22 @@ function SystemPage() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function TelemetryLoading() {
+  return (
+    <div className="space-y-3">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/70" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="h-16 rounded-md border border-border bg-muted/40 animate-pulse" />
+        <div className="h-16 rounded-md border border-border bg-muted/40 animate-pulse" />
+        <div className="h-16 rounded-md border border-border bg-muted/40 animate-pulse" />
+      </div>
+      <p className="text-xs text-muted-foreground">Connecting to live Pi telemetry...</p>
     </div>
   )
 }
