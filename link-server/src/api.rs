@@ -817,7 +817,7 @@ fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {
             }
         }
     }
-    ("unknown".into(), (-3.14, 3.14))
+    ("rs03".into(), (-12.57, 12.57))
 }
 
 fn collect_configured_motors(
