@@ -176,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
 - CH340 driver on Windows, or Linux with SocketCAN (e.g. Pi deployment)
 - `cargo build` for Rust; `cd link && npm install` for the frontend
 
+## HTTPS on the robot (Tailscale)
+
+Navi uses TLS for the Link UI. For a normal browser lock on the Pi, use Tailscale MagicDNS + **`tailscale cert`** so Let’s Encrypt certificates land in `certs/robot.pem` and `certs/robot-key.pem` (defaults `navi` already loads). Step-by-step: [`deploy/tailscale-https.md`](deploy/tailscale-https.md). Re-run the renewal script periodically (certs expire about every 90 days).
+
 ## Acknowledgments
 
 RobStride for publishing reference code that made the CAN2USB framing tractable.
