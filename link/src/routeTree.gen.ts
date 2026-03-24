@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TestRouteImport } from './routes/test'
 import { Route as SystemRouteImport } from './routes/system'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LogsRouteImport } from './routes/logs'
@@ -16,6 +17,11 @@ import { Route as ArmsRouteImport } from './routes/arms'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as MotorIdRouteImport } from './routes/motor.$id'
 
+const TestRoute = TestRouteImport.update({
+  id: '/test',
+  path: '/test',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SystemRoute = SystemRouteImport.update({
   id: '/system',
   path: '/system',
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/system': typeof SystemRoute
+  '/test': typeof TestRoute
   '/motor/$id': typeof MotorIdRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/system': typeof SystemRoute
+  '/test': typeof TestRoute
   '/motor/$id': typeof MotorIdRoute
 }
 export interface FileRoutesById {
@@ -70,13 +78,21 @@ export interface FileRoutesById {
   '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/system': typeof SystemRoute
+  '/test': typeof TestRoute
   '/motor/$id': typeof MotorIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/arms' | '/logs' | '/settings' | '/system' | '/motor/$id'
+  fullPaths:
+    | '/'
+    | '/arms'
+    | '/logs'
+    | '/settings'
+    | '/system'
+    | '/test'
+    | '/motor/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/arms' | '/logs' | '/settings' | '/system' | '/motor/$id'
+  to: '/' | '/arms' | '/logs' | '/settings' | '/system' | '/test' | '/motor/$id'
   id:
     | '__root__'
     | '/'
@@ -84,6 +100,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/settings'
     | '/system'
+    | '/test'
     | '/motor/$id'
   fileRoutesById: FileRoutesById
 }
@@ -93,11 +110,19 @@ export interface RootRouteChildren {
   LogsRoute: typeof LogsRoute
   SettingsRoute: typeof SettingsRoute
   SystemRoute: typeof SystemRoute
+  TestRoute: typeof TestRoute
   MotorIdRoute: typeof MotorIdRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/test': {
+      id: '/test'
+      path: '/test'
+      fullPath: '/test'
+      preLoaderRoute: typeof TestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/system': {
       id: '/system'
       path: '/system'
@@ -149,6 +174,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogsRoute: LogsRoute,
   SettingsRoute: SettingsRoute,
   SystemRoute: SystemRoute,
+  TestRoute: TestRoute,
   MotorIdRoute: MotorIdRoute,
 }
 export const routeTree = rootRouteImport

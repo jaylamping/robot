@@ -12,7 +12,7 @@ use robstride::ActuatorParameter;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::config::StartupRecoveryConfig;
+use crate::config::{BusConfig, StartupRecoveryConfig};
 
 const HOST_ID: u8 = 0xAA;
 
@@ -605,4 +605,36 @@ pub async fn create_ch341_protocol(port: &str) -> Result<Arc<Mutex<Protocol>>> {
     let callback = Arc::new(|_id: u32, _data: Vec<u8>| {});
     let protocol = Protocol::new(transport, callback);
     Ok(Arc::new(Mutex::new(protocol)))
+}
+
+#[cfg(feature = "socketcan")]
+pub async fn create_socketcan_protocol(interface: &str) -> Result<Arc<Mutex<Protocol>>> {
+    let transport = robstride::SocketCanTransport::new(interface.to_string())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to open SocketCAN {}: {:#}", interface, e))?;
+    let transport = TransportType::SocketCAN(transport);
+    let callback = Arc::new(|_id: u32, _data: Vec<u8>| {});
+    let protocol = Protocol::new(transport, callback);
+    Ok(Arc::new(Mutex::new(protocol)))
+}
+
+pub async fn create_protocol(bus: &BusConfig) -> Result<Arc<Mutex<Protocol>>> {
+    match bus.transport.as_str() {
+        #[cfg(feature = "socketcan")]
+        "socketcan" => {
+            let iface = bus.socketcan_interface.as_deref().unwrap_or("can0");
+            info!("Opening SocketCAN transport on {}", iface);
+            create_socketcan_protocol(iface).await
+        }
+        #[cfg(not(feature = "socketcan"))]
+        "socketcan" => {
+            anyhow::bail!(
+                "SocketCAN transport requested but binary was built without the 'socketcan' feature"
+            );
+        }
+        "ch341" | _ => {
+            info!("Opening CH341 transport on {}", bus.port);
+            create_ch341_protocol(&bus.port).await
+        }
+    }
 }

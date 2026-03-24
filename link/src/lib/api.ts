@@ -178,3 +178,48 @@ export function setArmPose(side: string, pose: PoseRequest): Promise<CommandResp
     body: JSON.stringify(pose),
   })
 }
+
+export interface SequenceInfo {
+  name: string
+  description: string
+}
+
+export function spinMotor(id: number, velocity_rads: number, kd?: number): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/spin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ velocity_rads, kd }),
+  })
+}
+
+export function torqueMotor(id: number, torque_nm: number): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/torque`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ torque_nm }),
+  })
+}
+
+export function jogMotor(id: number, delta_deg: number, kp?: number, kd?: number): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/jog`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ delta_deg, kp, kd }),
+  })
+}
+
+export function stopMotor(id: number): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/stop`, { method: 'POST' })
+}
+
+export function estopAll(): Promise<CommandResponse> {
+  return fetchJson('/estop', { method: 'POST' })
+}
+
+export function getSequences(): Promise<SequenceInfo[]> {
+  return fetchJson('/sequences')
+}
+
+export function runSequence(name: string): Promise<CommandResponse> {
+  return fetchJson(`/sequences/${name}/run`, { method: 'POST' })
+}

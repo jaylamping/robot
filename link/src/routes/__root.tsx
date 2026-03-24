@@ -14,6 +14,7 @@ import {
   LuScrollText,
   LuMenu,
   LuBot,
+  LuFlaskConical,
 } from 'react-icons/lu'
 
 export const Route = createRootRoute({
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/', label: 'Overview', icon: LuLayoutDashboard },
   { to: '/system', label: 'System', icon: LuCpu },
   { to: '/arms', label: 'Arms', icon: LuArmchair },
+  { to: '/test', label: 'Test', icon: LuFlaskConical },
   { to: '/settings', label: 'Settings', icon: LuSettings },
   { to: '/logs', label: 'Logs', icon: LuScrollText },
 ] as const

@@ -14,9 +14,17 @@ pub struct RobotConfig {
     pub torso: Option<TorsoConfig>,
 }
 
+fn default_transport() -> String {
+    "ch341".into()
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BusConfig {
+    #[serde(default = "default_transport")]
+    pub transport: String,
     pub port: String,
+    #[serde(default)]
+    pub socketcan_interface: Option<String>,
     pub baud: u32,
     pub can_bitrate: u32,
     pub host_id: u32,

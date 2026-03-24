@@ -3,6 +3,10 @@ name = "link-server"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+socketcan = ["cortex/socketcan"]
+
 [dependencies]
 cortex = { path = "../cortex" }
 robstride = { path = "../robstride-local" }

@@ -2,7 +2,9 @@
 # All CAN IDs, joint limits, and physical parameters in one place.
 
 bus:
+  transport: ch341
   port: COM5
+  socketcan_interface: can0
   baud: 921600
   can_bitrate: 1000000
   host_id: 0xAA

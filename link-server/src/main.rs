@@ -13,7 +13,7 @@ use wtransport::Identity;
 
 use cortex::arm::Arm;
 use cortex::config::RobotConfig;
-use cortex::motor::{create_ch341_protocol, Motor};
+use cortex::motor::{create_protocol, Motor};
 use link_server::log_buffer::LogBuffer;
 use link_server::telemetry::{self, TelemetrySnapshot};
 use link_server::{self, AppState};
@@ -36,6 +36,10 @@ struct Cli {
     #[arg(long, default_value = "4433")]
     wt_port: u16,
 
+    /// Path to robot.yaml config file
+    #[arg(long, default_value = "config/robot.yaml")]
+    config: String,
+
     /// Telemetry polling rate in Hz
     #[arg(long, default_value = "20")]
     telemetry_hz: u32,
@@ -50,10 +54,10 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
 
-    let config = RobotConfig::load("config/robot.yaml")?;
+    let config = RobotConfig::load(&cli.config)?;
     info!(
-        "Config loaded: port={}, baud={}",
-        config.bus.port, config.bus.baud
+        "Config loaded: transport={}, port={}, baud={}",
+        config.bus.transport, config.bus.port, config.bus.baud
     );
 
     let mut motors: HashMap<u8, Motor> = HashMap::new();
@@ -61,9 +65,8 @@ async fn main() -> Result<()> {
     let transport_type;
 
     if !cli.no_hardware {
-        info!("Opening CH341 transport on {}...", config.bus.port);
-        let protocol = create_ch341_protocol(&config.bus.port).await?;
-        transport_type = "CH341".to_string();
+        let protocol = create_protocol(&config.bus).await?;
+        transport_type = config.bus.transport.clone();
 
         let all_ids = collect_can_ids(&config);
         for can_id in all_ids {

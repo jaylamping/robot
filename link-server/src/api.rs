@@ -94,6 +94,30 @@ struct PoseRequest {
     kd: Option<f32>,
 }
 
+#[derive(Deserialize)]
+struct SpinRequest {
+    velocity_rads: f32,
+    kd: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct TorqueRequest {
+    torque_nm: f32,
+}
+
+#[derive(Deserialize)]
+struct JogRequest {
+    delta_deg: f32,
+    kp: Option<f32>,
+    kd: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct SequenceInfo {
+    name: String,
+    description: String,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/config", get(get_config))
@@ -111,6 +135,13 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/arms/{side}/disable", post(disable_arm))
         .route("/arms/{side}/home", post(home_arm))
         .route("/arms/{side}/pose", post(set_arm_pose))
+        .route("/motors/{id}/spin", post(spin_motor))
+        .route("/motors/{id}/torque", post(torque_motor))
+        .route("/motors/{id}/jog", post(jog_motor))
+        .route("/motors/{id}/stop", post(stop_motor))
+        .route("/estop", post(estop_all))
+        .route("/sequences", get(list_sequences))
+        .route("/sequences/{name}/run", post(run_sequence))
         .route("/logs", get(get_logs))
 }
 
@@ -488,6 +519,205 @@ async fn set_arm_pose(
         velocity_rads: None,
         torque_nm: None,
     }))
+}
+
+async fn spin_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+    Json(req): Json<SpinRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut motors = state.motors.lock().await;
+    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    match motor.spin(req.velocity_rads, req.kd).await {
+        Ok(ms) => Ok(Json(CommandResponse {
+            success: true,
+            error: None,
+            angle_rad: Some(ms.angle_rad),
+            velocity_rads: Some(ms.velocity_rads),
+            torque_nm: Some(ms.torque_nm),
+        })),
+        Err(e) => Ok(Json(CommandResponse {
+            success: false,
+            error: Some(format!("{:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })),
+    }
+}
+
+async fn torque_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+    Json(req): Json<TorqueRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut motors = state.motors.lock().await;
+    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    match motor.set_torque(req.torque_nm).await {
+        Ok(ms) => Ok(Json(CommandResponse {
+            success: true,
+            error: None,
+            angle_rad: Some(ms.angle_rad),
+            velocity_rads: Some(ms.velocity_rads),
+            torque_nm: Some(ms.torque_nm),
+        })),
+        Err(e) => Ok(Json(CommandResponse {
+            success: false,
+            error: Some(format!("{:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })),
+    }
+}
+
+async fn jog_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+    Json(req): Json<JogRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut motors = state.motors.lock().await;
+    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    match motor.read_position().await {
+        Ok(current_rad) => {
+            let target_rad = current_rad + req.delta_deg.to_radians();
+            match motor.move_to(target_rad, req.kp, req.kd).await {
+                Ok(ms) => Ok(Json(CommandResponse {
+                    success: true,
+                    error: None,
+                    angle_rad: Some(ms.angle_rad),
+                    velocity_rads: Some(ms.velocity_rads),
+                    torque_nm: Some(ms.torque_nm),
+                })),
+                Err(e) => Ok(Json(CommandResponse {
+                    success: false,
+                    error: Some(format!("{:#}", e)),
+                    angle_rad: None,
+                    velocity_rads: None,
+                    torque_nm: None,
+                })),
+            }
+        }
+        Err(e) => Ok(Json(CommandResponse {
+            success: false,
+            error: Some(format!("Failed to read position: {:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })),
+    }
+}
+
+async fn stop_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut motors = state.motors.lock().await;
+    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    match motor.disable().await {
+        Ok(ms) => Ok(Json(CommandResponse {
+            success: true,
+            error: None,
+            angle_rad: Some(ms.angle_rad),
+            velocity_rads: Some(ms.velocity_rads),
+            torque_nm: Some(ms.torque_nm),
+        })),
+        Err(e) => Ok(Json(CommandResponse {
+            success: false,
+            error: Some(format!("{:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })),
+    }
+}
+
+async fn estop_all(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let mut motors = state.motors.lock().await;
+    let mut errors = Vec::new();
+    for (id, motor) in motors.iter_mut() {
+        if let Err(e) = motor.disable().await {
+            errors.push(format!("motor {}: {:#}", id, e));
+        }
+    }
+    if errors.is_empty() {
+        Json(CommandResponse {
+            success: true,
+            error: None,
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })
+    } else {
+        Json(CommandResponse {
+            success: false,
+            error: Some(errors.join("; ")),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })
+    }
+}
+
+async fn list_sequences() -> impl IntoResponse {
+    Json(vec![
+        SequenceInfo {
+            name: "wave".into(),
+            description: "Single arm wave demonstration".into(),
+        },
+        SequenceInfo {
+            name: "home_all".into(),
+            description: "Return all joints to home position".into(),
+        },
+        SequenceInfo {
+            name: "sweep_test".into(),
+            description: "Sweep each joint through its range slowly".into(),
+        },
+    ])
+}
+
+async fn run_sequence(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match name.as_str() {
+        "home_all" => {
+            let mut arms = state.arms.lock().await;
+            let mut errors = Vec::new();
+            for (side, arm) in arms.iter_mut() {
+                if let Err(e) = arm.startup_safe_recovery().await {
+                    errors.push(format!("{} arm: {:#}", side, e));
+                }
+            }
+            if errors.is_empty() {
+                Ok(Json(CommandResponse {
+                    success: true,
+                    error: None,
+                    angle_rad: None,
+                    velocity_rads: None,
+                    torque_nm: None,
+                }))
+            } else {
+                Ok(Json(CommandResponse {
+                    success: false,
+                    error: Some(errors.join("; ")),
+                    angle_rad: None,
+                    velocity_rads: None,
+                    torque_nm: None,
+                }))
+            }
+        }
+        "wave" | "sweep_test" => Ok(Json(CommandResponse {
+            success: false,
+            error: Some(format!("Sequence '{}' not yet implemented", name)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })),
+        _ => Err(StatusCode::NOT_FOUND),
+    }
 }
 
 fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {

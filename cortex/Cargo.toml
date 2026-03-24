@@ -3,6 +3,10 @@ name = "cortex"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+socketcan = ["robstride/socketcan"]
+
 [dependencies]
 robstride = { path = "../robstride-local" }
 tokio = { version = "1", features = ["full"] }
