@@ -1,33 +1,31 @@
 # Humanoid Robot
 
-A fully articulated 5-foot humanoid robot with 28+ degrees of freedom, powered by high-torque brushless actuators and controlled entirely through Rust. The skeleton is built from 2020 aluminum extrusion with 3D-printed joint housings, driven by RobStride RS03 servo actuators delivering 60 N·m of peak torque per joint through 9:1 planetary gearboxes. Every motor on the body talks over CAN bus at 1 Mbps, commanded from an async Rust control stack that handles everything from serial framing to coordinated multi-joint trajectory execution.
-
-This is a from-scratch build — custom mechanical design, custom wiring, reverse-engineered motor protocols, and a ground-up software architecture designed to scale from one motor on a bench to a walking, gesturing humanoid.
+Personal project: a ~5-foot humanoid with roughly 28–31 actuated joints. The frame is 2020 aluminum extrusion; joints use PETG-printed housings and RobStride RS03 brushless actuators (about 60 N·m peak, 9:1 planetary, 48 V nominal). Motors are on standard CAN at 1 Mbps; control software is Rust (async I/O, shared transport per bus, coordinated arm commands). The repo is a work in progress—mechanical design, wiring, and software are all being built here, including the CAN2USB serial framing used with the RobStride debugger.
 
 ## Development Roadmap
 
-### Phase 1 — Arms (in progress)
-8 DOF total (4 per arm): shoulder pitch, shoulder roll, upper arm yaw, elbow pitch. Coaxial RS03 layout with pitch motors mounted inside the torso and roll/yaw motors in 3D-printed housings along the arm. First milestone is a coordinated arm wave demonstration.
+### Phase 1 — Arms (current)
+8 DOF (4 per arm): shoulder pitch, shoulder roll, upper arm yaw, elbow pitch. RS03 layout: pitch motors in the torso, roll/yaw in printed housings along the arm. First goal: a simple coordinated arm wave.
 
 ### Phase 2 — Legs
-12 DOF total (6 per leg): hip yaw, hip roll, hip pitch, knee pitch, ankle pitch, ankle roll. The hip assembly mirrors the shoulder's coaxial design with three stacked actuators. Knee is a single high-torque pitch joint. Ankle uses two actuators in a differential configuration for combined pitch/roll authority. Standing balance comes first, then walking gait.
+12 DOF (6 per leg): hip yaw/roll/pitch, knee pitch, ankle pitch/roll. Hip stack is similar in spirit to the shoulder (coaxial/stacked actuators). Plan: balance before gait.
 
 ### Phase 3 — Wrists & Hands
-6+ DOF total (3+ per side): wrist pitch, wrist yaw, wrist roll, plus articulated grip. Likely a mix of smaller RobStride actuators for the wrist and tendon-driven or linkage-based fingers for grasping.
+6+ DOF (3+ per side): wrist articulation plus a grip. Likely smaller actuators at the wrist and a simpler hand mechanism (tendon or linkage).
 
 ### Phase 4 — Head
-2–3 DOF: neck pan, neck tilt, and possibly a jaw or visor mechanism. Camera integration for vision. Expressiveness through motion rather than a face display.
+2–3 DOF: neck pan/tilt, optional jaw or visor. Room for cameras later.
 
-**Full robot target: 28–31 DOF**
+**Target: 28–31 DOF total**
 
 ## Repository Structure
 
-This is a **Cargo workspace** with two Rust crates and a React frontend:
+Cargo workspace: two Rust crates and a React frontend.
 
 ```
 Cargo.toml                  Workspace root (members: cortex, navi)
 
-cortex/                     Motor control, arm coordination, config ("brain stem")
+cortex/                     Motor control, arm coordination, config
   src/
     lib.rs                  Crate root (pub mod config, motor, arm)
     config.rs               Typed config loader (serde_yaml → robot.yaml)
@@ -46,7 +44,7 @@ navi/                       Web server + real-time telemetry (pairs with `link/`
     telemetry.rs            Motor polling loop + WebTransport datagram streaming
     log_buffer.rs           In-memory log ring buffer
 
-link/                       React frontend — the primary control interface
+link/                       Web UI (Vite + React)
   src/
     routes/                 TanStack Router file-based routes
     components/             MotorCard, MotorControl, TelemetryChart, PoseEditor, etc.
@@ -60,20 +58,21 @@ robstride-local/            Patched robstride crate (socketcan made optional for
 
 ## Crates
 
-### `cortex` — Motor Control
+### `cortex` — Motor control
 
-The "brain stem." Owns all motor communication, arm coordination, and config loading.
+Motor I/O, arm coordination, and config loading.
 
-- **`motor.rs`** — High-level async API for a single RS03 actuator. Position hold, velocity, torque, enable/disable, zero, and safe-startup recovery with stall detection.
-- **`arm.rs`** — Multi-joint arm controller that shares a single CAN transport across all joints on an arm. Pose commands, homing, coordinated enable/disable.
-- **`config.rs`** — Deserializes `config/robot.yaml` into typed Rust structs via `serde_yaml`. Joint limits, CAN IDs, actuator specs.
+- **`motor.rs`** — Async API for one RS03: position, velocity, torque, enable/disable, zero, safe startup.
+- **`arm.rs`** — Multi-joint arm on a shared CAN transport: poses, homing, enable/disable together.
+- **`config.rs`** — Loads `config/robot.yaml` into typed structs (limits, CAN IDs, bus settings).
 
 Binaries:
+
 | Binary | Description |
 |---|---|
 | `probe` | Scans the CAN bus, reports which motors respond |
-| `motor_repl` | Interactive REPL for sending commands, reading parameters, tuning gains |
-| `wave_demo` | Coordinated arm wave — the Phase 1 milestone demo |
+| `motor_repl` | Interactive REPL for commands, parameters, gains |
+| `wave_demo` | Coordinated arm wave (Phase 1 demo) |
 
 ```bash
 cargo run -p cortex --bin probe
@@ -81,26 +80,25 @@ cargo run -p cortex --bin motor_repl
 cargo run -p cortex --bin wave_demo
 ```
 
-### `navi` — Web Server & Telemetry
+### `navi` — Web server and telemetry
 
-Serves the Link frontend and provides two communication channels:
+Serves the Link UI and exposes:
 
-- **REST API** (`/api/*`) — Motor commands (enable, disable, move, zero), arm coordination (pose, home), config, logs, server status.
-- **WebTransport** — Real-time motor telemetry (position, velocity, torque, temperature) streamed as QUIC datagrams at high frequency.
+- **REST** (`/api/*`) — Motors (enable, move, etc.), arms, config, logs, status.
+- **WebTransport** — High-rate telemetry (position, velocity, torque, temperature) over QUIC datagrams.
 
-The single binary is called `navi`:
 ```bash
 cargo run -p navi --bin navi                  # with hardware
 cargo run -p navi --bin navi -- --no-hardware  # mock telemetry, no CAN
 ```
 
-### `link` — React Frontend
+### `link` — Frontend
 
-The primary interaction layer with the robot. Not just a dashboard — it's the control interface for enabling motors, posing arms, monitoring telemetry, and tuning parameters.
+Browser UI for motor control, arm posing, telemetry, and tuning.
 
 **Stack:** React 19, TypeScript, Vite, TanStack Router, Zustand, uPlot, Tailwind CSS 4, shadcn/ui.
 
-See [`link/README.md`](link/README.md) for the full frontend stack, API reference, and project structure.
+See [`link/README.md`](link/README.md) for details.
 
 ```bash
 cd link
@@ -113,26 +111,24 @@ npm run build     # Production build → dist/ (served by navi)
 
 | Component | Spec |
 |---|---|
-| Arm motors | RobStride RS03 (60 N·m peak, 9:1 planetary, 48V) |
+| Arm motors | RobStride RS03 (60 N·m peak, 9:1 planetary, 48 V) |
 | Waist motor | OpenQDD |
 | CAN adapter | RobStride CAN2USB debugger (CH340, 921600 baud) |
-| Power | 24V/1200W bench PSU (48V battery for mobile) |
-| Torso frame | 2020 aluminum extrusion, 460 × 200 × 160 mm |
-| Joint housings | PETG 3D-printed with integrated mounting tabs |
-| CAN bus | 1 Mbps standard CAN (RS03), CAN-FD (Moteus) |
+| Power | 24 V / 1200 W bench supply (48 V battery later for untethered) |
+| Torso frame | 2020 extrusion, 460 × 200 × 160 mm |
+| Joint housings | PETG, printed |
+| CAN | 1 Mbps standard CAN (RS03); CAN-FD reserved for Moteus (future) |
 
-## CAN2USB Protocol
+## CAN2USB protocol
 
-The RobStride CAN2USB debugger uses a proprietary AT-framed binary protocol over serial — no official SDK or documentation exists. I reverse-engineered it from RobStride's [CAN-USB-data-conversion](https://github.com/RobStride/CAN-USB-data-conversion) source.
+The RobStride CAN2USB debugger speaks a proprietary AT-framed binary protocol over serial (no public spec). Framing was derived from RobStride’s [CAN-USB-data-conversion](https://github.com/RobStride/CAN-USB-data-conversion) repo. The `robstride` crate’s `CH341Transport` implements it.
 
 ```
 Frame: 'A' 'T' [4-byte wire ID] [1-byte len] [data] '\r' '\n'
 Wire ID: (29-bit CAN arbitration ID << 3) | 0x04, big-endian
 ```
 
-The `robstride` Rust crate's `CH341Transport` handles this protocol natively.
-
-## Quick Start
+## Quick start
 
 ### Motor control (hardware required)
 
@@ -141,7 +137,7 @@ cargo run -p cortex --bin probe       # verify CAN connectivity
 cargo run -p cortex --bin motor_repl  # interactive motor shell
 ```
 
-### Link (full stack, no hardware)
+### Full stack without motors
 
 ```bash
 # Terminal 1 — backend with mock telemetry
@@ -151,7 +147,7 @@ cargo run -p navi --bin navi -- --no-hardware
 cd link && npm run dev
 ```
 
-Then open http://localhost:5173.
+Open http://localhost:5173.
 
 ### Code example
 
@@ -175,11 +171,11 @@ async fn main() -> anyhow::Result<()> {
 
 ## Requirements
 
-- Rust stable toolchain (MSVC target on Windows)
-- Node.js v24+ (for the Link frontend)
-- Windows with CH340 driver installed (or Linux with SocketCAN for future Pi deployment)
-- `cargo build` handles all Rust dependencies; `cd link && npm install` for the frontend
+- Rust stable (MSVC on Windows)
+- Node.js v24+ (for Link)
+- CH340 driver on Windows, or Linux with SocketCAN (e.g. Pi deployment)
+- `cargo build` for Rust; `cd link && npm install` for the frontend
 
 ## Acknowledgments
 
-The human that forced me to write all this also forced me to tell you that he's jacked. Not only that but he wears the freshest clothes, eats at the chillest restaurants and hangs out with the hottest dudes.
+RobStride for publishing reference code that made the CAN2USB framing tractable.
