@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
+use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tracing::{debug, info, warn};
 
 use crate::AppState;
@@ -24,6 +25,15 @@ pub struct MotorSnapshot {
 pub struct TelemetrySnapshot {
     pub timestamp_ms: u64,
     pub motors: Vec<MotorSnapshot>,
+    pub system: SystemSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemSnapshot {
+    pub cpu_usage_percent: f32,
+    pub memory_used_mb: u64,
+    pub memory_total_mb: u64,
+    pub temperature_c: Option<f32>,
 }
 
 /// Polls all motors at `rate_hz` and broadcasts snapshots.
@@ -31,12 +41,14 @@ pub struct TelemetrySnapshot {
 pub async fn telemetry_loop(state: Arc<AppState>, rate_hz: u32, mock: bool) {
     let period = Duration::from_micros(1_000_000 / rate_hz as u64);
     let start = std::time::Instant::now();
+    let mut system_telemetry = SystemTelemetryCollector::new();
 
     loop {
+        let system = system_telemetry.sample();
         let snapshot = if mock {
-            build_mock_snapshot(&state, start.elapsed().as_millis() as u64).await
+            build_mock_snapshot(&state, start.elapsed().as_millis() as u64, system).await
         } else {
-            build_live_snapshot(&state, start.elapsed().as_millis() as u64).await
+            build_live_snapshot(&state, start.elapsed().as_millis() as u64, system).await
         };
 
         *state.latest_telemetry.write().await = Some(snapshot.clone());
@@ -116,7 +128,11 @@ pub async fn webtransport_server(state: Arc<AppState>, port: u16, identity: wtra
     }
 }
 
-async fn build_mock_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot {
+async fn build_mock_snapshot(
+    state: &AppState,
+    timestamp_ms: u64,
+    system: SystemSnapshot,
+) -> TelemetrySnapshot {
     let joint_map = build_joint_name_map(state).await;
     let mut motors = Vec::new();
 
@@ -137,10 +153,15 @@ async fn build_mock_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
     TelemetrySnapshot {
         timestamp_ms,
         motors,
+        system,
     }
 }
 
-async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot {
+async fn build_live_snapshot(
+    state: &AppState,
+    timestamp_ms: u64,
+    system: SystemSnapshot,
+) -> TelemetrySnapshot {
     let mut motors_guard = state.motors.lock().await;
     let joint_map = build_joint_name_map(state).await;
     let mut motors = Vec::new();
@@ -204,6 +225,51 @@ async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
     TelemetrySnapshot {
         timestamp_ms,
         motors,
+        system,
+    }
+}
+
+struct SystemTelemetryCollector {
+    sys: System,
+    components: Components,
+}
+
+impl SystemTelemetryCollector {
+    fn new() -> Self {
+        let mut sys = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_cpu(CpuRefreshKind::everything())
+                .with_memory(MemoryRefreshKind::everything()),
+        );
+        // Prime CPU stats so usage values are meaningful on subsequent refreshes.
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+
+        Self {
+            sys,
+            components: Components::new_with_refreshed_list(),
+        }
+    }
+
+    fn sample(&mut self) -> SystemSnapshot {
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_memory();
+        self.components.refresh(false);
+
+        let memory_total_mb = self.sys.total_memory() / (1024 * 1024);
+        let memory_used_mb = self.sys.used_memory() / (1024 * 1024);
+        let temperature_c = self
+            .components
+            .iter()
+            .filter_map(|component| component.temperature())
+            .max_by(f32::total_cmp);
+
+        SystemSnapshot {
+            cpu_usage_percent: self.sys.global_cpu_usage(),
+            memory_used_mb,
+            memory_total_mb,
+            temperature_c,
+        }
     }
 }
 

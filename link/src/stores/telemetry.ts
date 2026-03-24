@@ -15,6 +15,14 @@ export interface MotorSnapshot {
 export interface TelemetrySnapshot {
   timestamp_ms: number
   motors: MotorSnapshot[]
+  system?: SystemSnapshot
+}
+
+export interface SystemSnapshot {
+  cpu_usage_percent: number
+  memory_used_mb: number
+  memory_total_mb: number
+  temperature_c?: number | null
 }
 
 const HISTORY_MAX = 600
@@ -24,6 +32,7 @@ interface TelemetryState {
   history: Record<number, MotorSnapshot[]>
   lastTimestamp: number
   connected: boolean
+  system: SystemSnapshot | null
 
   updateSnapshot: (snap: TelemetrySnapshot) => void
   setConnected: (connected: boolean) => void
@@ -34,6 +43,7 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
   history: {},
   lastTimestamp: 0,
   connected: false,
+  system: null,
 
   updateSnapshot: (snap) =>
     set((state) => {
@@ -55,6 +65,7 @@ export const useTelemetryStore = create<TelemetryState>((set) => ({
         motors: nextMotors,
         history: nextHistory,
         lastTimestamp: snap.timestamp_ms,
+        system: snap.system ?? state.system,
       }
     }),
 

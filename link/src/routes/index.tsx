@@ -1,12 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { getMotors, getConfig, getJointSlots, discoverMotors, type MotorInfo, type RobotConfig, type JointSlot, type DiscoverResult } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { MotorCard } from '@/components/MotorCard'
 import { RobotDiagram } from '@/components/RobotDiagram'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { LuBot, LuRadar } from 'react-icons/lu'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { LuBot, LuCpu, LuMemoryStick, LuRadar, LuThermometer } from 'react-icons/lu'
 
 export const Route = createFileRoute('/')({
   component: OverviewPage,
@@ -22,6 +23,7 @@ function OverviewPage() {
   const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(null)
   const navigate = useNavigate()
   const telemetryMotors = useTelemetryStore((s) => s.motors)
+  const systemTelemetry = useTelemetryStore((s) => s.system)
 
   const refreshMotors = useCallback(() => {
     return Promise.all([getMotors(), getConfig(), getJointSlots()])
@@ -145,6 +147,41 @@ function OverviewPage() {
         </div>
       )}
 
+      <div className="mb-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Pi Telemetry</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!systemTelemetry ? (
+              <p className="text-sm text-muted-foreground">Waiting for system telemetry...</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Metric
+                  icon={<LuCpu className="size-4" />}
+                  label="CPU"
+                  value={`${systemTelemetry.cpu_usage_percent.toFixed(1)}%`}
+                />
+                <Metric
+                  icon={<LuMemoryStick className="size-4" />}
+                  label="Memory"
+                  value={`${systemTelemetry.memory_used_mb} / ${systemTelemetry.memory_total_mb} MB`}
+                />
+                <Metric
+                  icon={<LuThermometer className="size-4" />}
+                  label="Temp"
+                  value={
+                    systemTelemetry.temperature_c == null
+                      ? 'N/A'
+                      : `${systemTelemetry.temperature_c.toFixed(1)} C`
+                  }
+                />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       {onlineMotors.length > 0 && (
         <section className="mb-8">
           <h3 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">
@@ -199,4 +236,24 @@ function extractWaistCanId(waist: Record<string, unknown> | undefined): number |
   if (!waist) return null
   const rotation = waist['rotation'] as { can_id?: number | null } | undefined
   return rotation?.can_id ?? null
+}
+
+function Metric({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+}) {
+  return (
+    <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+      <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+        {icon}
+        <span className="text-xs uppercase tracking-wide">{label}</span>
+      </div>
+      <p className="text-sm font-mono">{value}</p>
+    </div>
+  )
 }
