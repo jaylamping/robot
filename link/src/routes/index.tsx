@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getMotors, getConfig, getJointSlots, discoverMotors, type MotorInfo, type RobotConfig, type JointSlot, type DiscoverResult } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { MotorCard } from '@/components/MotorCard'
@@ -23,15 +23,17 @@ function OverviewPage() {
   const navigate = useNavigate()
   const telemetryMotors = useTelemetryStore((s) => s.motors)
 
-  const refreshMotors = useCallback(() => {
+  const refreshMotors = () => {
     return Promise.all([getMotors(), getConfig(), getJointSlots()])
       .then(([m, c, s]) => { setMotors(m); setConfig(c); setJointSlots(s); setError(null) })
       .catch((e) => setError(e.message))
-  }, [])
+  }
 
   useEffect(() => {
     refreshMotors().finally(() => setLoading(false))
-  }, [refreshMotors])
+    // Initial load only; subsequent refreshes are user-triggered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleDiscover = async () => {
     setDiscovering(true)

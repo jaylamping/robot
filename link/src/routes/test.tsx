@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   getMotors,
@@ -57,13 +57,13 @@ function TestPage() {
   const [busy, setBusy] = useState(false)
   const [discovering, setDiscovering] = useState(false)
 
-  const refreshMotors = useCallback(async () => {
+  const refreshMotors = async () => {
     const m = await getMotors()
     setMotors(m)
     if (m.length > 0 && (selectedMotorId === null || !m.some(x => x.can_id === selectedMotorId))) {
       setSelectedMotorId(m[0].can_id)
     }
-  }, [selectedMotorId])
+  }
 
   useEffect(() => {
     Promise.all([getMotors(), getSequences()])
@@ -78,7 +78,7 @@ function TestPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  const handleDiscover = useCallback(async () => {
+  async function handleDiscover() {
     setDiscovering(true)
     try {
       const result = await discoverMotors()
@@ -99,9 +99,9 @@ function TestPage() {
     } finally {
       setDiscovering(false)
     }
-  }, [refreshMotors])
+  }
 
-  const exec = useCallback(async (label: string, fn: () => Promise<CommandResponse>) => {
+  async function exec(label: string, fn: () => Promise<CommandResponse>) {
     setBusy(true)
     try {
       const res = await fn()
@@ -121,7 +121,7 @@ function TestPage() {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }
 
   async function handleEstop() {
     setBusy(true)
