@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { getStatus, getConfig, type ServerStatus, type RobotConfig } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { LuServer, LuRadio, LuCpu, LuThermometer } from 'react-icons/lu'
+import { LuServer, LuRadio, LuCpu, LuThermometer, LuMemoryStick } from 'react-icons/lu'
 
 export const Route = createFileRoute('/system')({
   component: SystemPage,
@@ -25,6 +25,7 @@ function SystemPage() {
   const [error, setError] = useState<string | null>(null)
   const connected = useTelemetryStore((s) => s.connected)
   const motors = useTelemetryStore((s) => s.motors)
+  const systemTelemetry = useTelemetryStore((s) => s.system)
 
   useEffect(() => {
     Promise.all([getStatus(), getConfig()])
@@ -77,6 +78,39 @@ function SystemPage() {
           badge={connected ? 'default' : 'destructive'}
         />
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Pi Telemetry</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!systemTelemetry ? (
+            <p className="text-sm text-muted-foreground">Waiting for system telemetry...</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Metric
+                icon={<LuCpu className="size-4" />}
+                label="CPU"
+                value={`${systemTelemetry.cpu_usage_percent.toFixed(1)}%`}
+              />
+              <Metric
+                icon={<LuMemoryStick className="size-4" />}
+                label="Memory"
+                value={`${systemTelemetry.memory_used_mb} / ${systemTelemetry.memory_total_mb} MB`}
+              />
+              <Metric
+                icon={<LuThermometer className="size-4" />}
+                label="Temp"
+                value={
+                  systemTelemetry.temperature_c == null
+                    ? 'N/A'
+                    : `${systemTelemetry.temperature_c.toFixed(1)} C`
+                }
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {config && (
@@ -202,6 +236,26 @@ function StatusCard({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function Metric({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+}) {
+  return (
+    <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+      <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+        {icon}
+        <span className="text-xs uppercase tracking-wide">{label}</span>
+      </div>
+      <p className="text-sm font-mono">{value}</p>
+    </div>
   )
 }
 
