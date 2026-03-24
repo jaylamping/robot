@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react'
+import { useState, useRef } from 'react'
 import uPlot from 'uplot'
 import UplotReact from 'uplot-react'
 import 'uplot/dist/uPlot.min.css'
@@ -30,7 +30,7 @@ export function TelemetryChart({
   const displayData = paused ? frozen : history
   const totalSamples = displayData.length
 
-  const uData: uPlot.AlignedData = useMemo(() => {
+  const uData: uPlot.AlignedData = (() => {
     const times = new Float64Array(totalSamples)
     const values = new Float64Array(totalSamples)
     for (let i = 0; i < totalSamples; i++) {
@@ -38,9 +38,9 @@ export function TelemetryChart({
       values[i] = displayData[i][dataKey] as number
     }
     return [times, values]
-  }, [displayData, dataKey, totalSamples, rateHz])
+  })()
 
-  const opts: uPlot.Options = useMemo(() => ({
+  const opts: uPlot.Options = {
     width: 100,
     height: 200,
     cursor: {
@@ -76,9 +76,9 @@ export function TelemetryChart({
       },
     ],
     plugins: [tooltipPlugin(label, unit)],
-  }), [color, unit, label])
+  }
 
-  const onCreate = useCallback((chart: uPlot) => {
+  function onCreate(chart: uPlot) {
     chartRef.current = chart
 
     const ro = new ResizeObserver((entries) => {
@@ -97,7 +97,7 @@ export function TelemetryChart({
       ro.disconnect()
       origDestroy()
     }
-  }, [])
+  }
 
   function togglePause() {
     if (!paused) {
