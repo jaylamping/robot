@@ -149,8 +149,13 @@ async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
             .cloned()
             .unwrap_or_else(|| format!("motor_{}", can_id));
 
-        match motor.read_state().await {
-            Ok(ms) => {
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            motor.read_state(),
+        ).await;
+
+        match result {
+            Ok(Ok(ms)) => {
                 motors.push(MotorSnapshot {
                     can_id,
                     joint_name,
@@ -163,7 +168,7 @@ async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
                     online: true,
                 });
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(can_id, error = %e, "failed to read motor state");
                 motors.push(MotorSnapshot {
                     can_id,
@@ -174,6 +179,20 @@ async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
                     temperature_c: 0.0,
                     mode: "Unknown".into(),
                     faults: vec![format!("read error: {}", e)],
+                    online: false,
+                });
+            }
+            Err(_) => {
+                warn!(can_id, "motor read timed out");
+                motors.push(MotorSnapshot {
+                    can_id,
+                    joint_name,
+                    angle_rad: 0.0,
+                    velocity_rads: 0.0,
+                    torque_nm: 0.0,
+                    temperature_c: 0.0,
+                    mode: "Unknown".into(),
+                    faults: vec!["timeout".into()],
                     online: false,
                 });
             }
