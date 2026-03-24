@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
 use clap::Parser;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -104,6 +106,19 @@ async fn main() -> Result<()> {
     };
     info!("WebTransport cert hash: {}", cert_hash_b64);
 
+    let cert_der: Vec<Vec<u8>> = identity
+        .certificate_chain()
+        .as_slice()
+        .iter()
+        .map(|c| c.der().to_vec())
+        .collect();
+    let key_der = identity.private_key().secret_der().to_vec();
+    let wt_identity = identity.clone_identity();
+
+    let tls_config = RustlsConfig::from_der(cert_der, key_der)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to build TLS config: {}", e))?;
+
     let mode = if cli.no_hardware {
         "mock".to_string()
     } else {
@@ -138,18 +153,27 @@ async fn main() -> Result<()> {
     let wt_state = state.clone();
     let wt_port = cli.wt_port;
     tokio::spawn(async move {
-        telemetry::webtransport_server(wt_state, wt_port, identity).await;
+        telemetry::webtransport_server(wt_state, wt_port, wt_identity).await;
     });
 
     let app = link_server::build_router(state.clone());
-    let addr = format!("0.0.0.0:{}", cli.port);
-    info!("Link HTTP server starting on http://{}", addr);
+    let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
+    info!("Link HTTPS server starting on https://{}", addr);
     info!("Link WebTransport server on port {}", cli.wt_port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(state))
-        .await?;
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    let shutdown_state = state.clone();
+    tokio::spawn(async move {
+        shutdown_signal(shutdown_state).await;
+        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(5)));
+    });
+
+    axum_server::bind_rustls(addr, tls_config)
+        .handle(handle)
+        .serve(app.into_make_service())
+        .await
+        .map_err(|e| anyhow::anyhow!("HTTPS server error: {}", e))?;
 
     Ok(())
 }

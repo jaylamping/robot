@@ -17,6 +17,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1"
 axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 clap = { version = "4", features = ["derive"] }
 wtransport = "0.7"
