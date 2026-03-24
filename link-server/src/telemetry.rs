@@ -34,7 +34,7 @@ pub async fn telemetry_loop(state: Arc<AppState>, rate_hz: u32, mock: bool) {
 
     loop {
         let snapshot = if mock {
-            build_mock_snapshot(&state, start.elapsed().as_millis() as u64)
+            build_mock_snapshot(&state, start.elapsed().as_millis() as u64).await
         } else {
             build_live_snapshot(&state, start.elapsed().as_millis() as u64).await
         };
@@ -114,8 +114,8 @@ pub async fn webtransport_server(state: Arc<AppState>, port: u16, identity: wtra
     }
 }
 
-fn build_mock_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot {
-    let joint_map = build_joint_name_map(state);
+async fn build_mock_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot {
+    let joint_map = build_joint_name_map(state).await;
     let mut motors = Vec::new();
 
     for (&can_id, joint_name) in &joint_map {
@@ -140,7 +140,7 @@ fn build_mock_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot
 
 async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySnapshot {
     let mut motors_guard = state.motors.lock().await;
-    let joint_map = build_joint_name_map(state);
+    let joint_map = build_joint_name_map(state).await;
     let mut motors = Vec::new();
 
     for (&can_id, motor) in motors_guard.iter_mut() {
@@ -206,12 +206,13 @@ async fn build_live_snapshot(state: &AppState, timestamp_ms: u64) -> TelemetrySn
 }
 
 /// Build a CAN ID -> joint name lookup from the robot config.
-pub fn build_joint_name_map(state: &AppState) -> HashMap<u8, String> {
+pub async fn build_joint_name_map(state: &AppState) -> HashMap<u8, String> {
+    let config = state.config.read().await;
     let mut map = HashMap::new();
 
     let arms: Vec<(&str, &cortex::config::ArmConfig)> = [
-        ("left", state.config.arm_left.as_ref()),
-        ("right", state.config.arm_right.as_ref()),
+        ("left", config.arm_left.as_ref()),
+        ("right", config.arm_right.as_ref()),
     ]
     .into_iter()
     .filter_map(|(side, arm)| arm.map(|a| (side, a)))
@@ -225,7 +226,7 @@ pub fn build_joint_name_map(state: &AppState) -> HashMap<u8, String> {
         }
     }
 
-    if let Some(ref waist) = state.config.waist {
+    if let Some(ref waist) = config.waist {
         for (name, joint) in waist {
             if let Some(id) = joint.can_id {
                 map.insert(id, format!("waist_{}", name));

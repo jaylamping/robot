@@ -148,10 +148,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/discover", post(discover_motors))
         .route("/telemetry", get(get_telemetry))
         .route("/logs", get(get_logs))
+        .route("/motors/{id}/assign", post(assign_motor))
+        .route("/motors/{id}/unassign", post(unassign_motor))
+        .route("/joint-slots", get(get_joint_slots))
 }
 
 async fn get_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(serde_json::to_value(&state.config).unwrap())
+    let config = state.config.read().await;
+    Json(serde_json::to_value(&*config).unwrap())
 }
 
 async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -200,8 +204,9 @@ async fn get_telemetry(
 }
 
 async fn get_motors(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let joint_map = build_joint_name_map(&state);
+    let joint_map = build_joint_name_map(&state).await;
     let motors = state.motors.lock().await;
+    let config = state.config.read().await;
 
     let mut infos: Vec<MotorInfo> = Vec::new();
 
@@ -211,7 +216,7 @@ async fn get_motors(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .cloned()
             .unwrap_or_else(|| format!("motor_{}", can_id));
 
-        let (actuator_type, limits) = find_joint_config(&state, can_id);
+        let (actuator_type, limits) = find_joint_config(&config, can_id);
 
         infos.push(MotorInfo {
             can_id,
@@ -222,7 +227,7 @@ async fn get_motors(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         });
     }
 
-    collect_configured_motors(&state, &motors, &joint_map, &mut infos);
+    collect_configured_motors(&config, &motors, &joint_map, &mut infos);
 
     infos.sort_by_key(|m| m.can_id);
     Json(infos)
@@ -233,14 +238,15 @@ async fn get_motor(
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut motors = state.motors.lock().await;
-    let joint_map = build_joint_name_map(&state);
+    let joint_map = build_joint_name_map(&state).await;
 
     let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
     let joint_name = joint_map
         .get(&id)
         .cloned()
         .unwrap_or_else(|| format!("motor_{}", id));
-    let (actuator_type, limits) = find_joint_config(&state, id);
+    let config = state.config.read().await;
+    let (actuator_type, limits) = find_joint_config(&config, id);
 
     match motor.read_state().await {
         Ok(ms) => Ok(Json(MotorDetail {
@@ -400,10 +406,11 @@ async fn control_motor(
 async fn get_arms(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut result = Vec::new();
     let motors = state.motors.lock().await;
+    let config = state.config.read().await;
 
     let arm_configs: Vec<(&str, &cortex::config::ArmConfig)> = [
-        ("left", state.config.arm_left.as_ref()),
-        ("right", state.config.arm_right.as_ref()),
+        ("left", config.arm_left.as_ref()),
+        ("right", config.arm_right.as_ref()),
     ]
     .into_iter()
     .filter_map(|(side, arm)| arm.map(|a| (side, a)))
@@ -798,10 +805,114 @@ async fn discover_motors(
     }))
 }
 
-fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {
+#[derive(Deserialize)]
+struct AssignRequest {
+    section: String,
+    joint: String,
+}
+
+#[derive(Serialize)]
+struct JointSlot {
+    section: String,
+    joint: String,
+    can_id: Option<u8>,
+    display_name: String,
+}
+
+async fn assign_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+    Json(req): Json<AssignRequest>,
+) -> impl IntoResponse {
+    let mut config = state.config.write().await;
+
+    if let Err(e) = config.assign_can_id(&req.section, &req.joint, id) {
+        return Json(CommandResponse {
+            success: false,
+            error: Some(format!("{:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        });
+    }
+
+    if let Err(e) = config.save(&state.config_path) {
+        return Json(CommandResponse {
+            success: false,
+            error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        });
+    }
+
+    info!(can_id = id, section = %req.section, joint = %req.joint, "motor assigned to joint");
+
+    Json(CommandResponse {
+        success: true,
+        error: None,
+        angle_rad: None,
+        velocity_rads: None,
+        torque_nm: None,
+    })
+}
+
+async fn unassign_motor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u8>,
+) -> impl IntoResponse {
+    let mut config = state.config.write().await;
+
+    config.clear_can_id(id);
+
+    if let Err(e) = config.save(&state.config_path) {
+        return Json(CommandResponse {
+            success: false,
+            error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        });
+    }
+
+    info!(can_id = id, "motor unassigned");
+
+    Json(CommandResponse {
+        success: true,
+        error: None,
+        angle_rad: None,
+        velocity_rads: None,
+        torque_nm: None,
+    })
+}
+
+async fn get_joint_slots(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let config = state.config.read().await;
+    let slots: Vec<JointSlot> = config.joint_slots().into_iter().map(|(section, joint, can_id)| {
+        let display_name = format!("{}_{}", match section.as_str() {
+            "arm_left" => "left",
+            "arm_right" => "right",
+            other => other,
+        }, joint)
+            .split('_')
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        JointSlot { section, joint, can_id, display_name }
+    }).collect();
+    Json(slots)
+}
+
+fn find_joint_config(config: &cortex::config::RobotConfig, can_id: u8) -> (String, (f64, f64)) {
     let arms = [
-        state.config.arm_left.as_ref(),
-        state.config.arm_right.as_ref(),
+        config.arm_left.as_ref(),
+        config.arm_right.as_ref(),
     ];
     for arm in arms.iter().flatten() {
         for (_name, joint) in arm.joints() {
@@ -810,7 +921,7 @@ fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {
             }
         }
     }
-    if let Some(ref waist) = state.config.waist {
+    if let Some(ref waist) = config.waist {
         for (_name, joint) in waist {
             if joint.can_id == Some(can_id) {
                 return (joint.actuator.clone(), joint.limits);
@@ -821,12 +932,12 @@ fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {
 }
 
 fn collect_configured_motors(
-    state: &AppState,
+    config: &cortex::config::RobotConfig,
     motors: &std::collections::HashMap<u8, cortex::motor::Motor>,
     joint_map: &std::collections::HashMap<u8, String>,
     infos: &mut Vec<MotorInfo>,
 ) {
-    let all_configured = all_configured_can_ids(state);
+    let all_configured = all_configured_can_ids(config);
     for (can_id, actuator_type, limits) in all_configured {
         if motors.contains_key(&can_id) {
             continue;
@@ -845,11 +956,11 @@ fn collect_configured_motors(
     }
 }
 
-fn all_configured_can_ids(state: &AppState) -> Vec<(u8, String, (f64, f64))> {
+fn all_configured_can_ids(config: &cortex::config::RobotConfig) -> Vec<(u8, String, (f64, f64))> {
     let mut ids = Vec::new();
     let arms = [
-        state.config.arm_left.as_ref(),
-        state.config.arm_right.as_ref(),
+        config.arm_left.as_ref(),
+        config.arm_right.as_ref(),
     ];
     for arm in arms.iter().flatten() {
         for (_name, joint) in arm.joints() {
@@ -858,7 +969,7 @@ fn all_configured_can_ids(state: &AppState) -> Vec<(u8, String, (f64, f64))> {
             }
         }
     }
-    if let Some(ref waist) = state.config.waist {
+    if let Some(ref waist) = config.waist {
         for (_name, joint) in waist {
             if let Some(id) = joint.can_id {
                 ids.push((id, joint.actuator.clone(), joint.limits));

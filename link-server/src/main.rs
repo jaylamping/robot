@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 use base64::Engine;
 use clap::Parser;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -113,7 +113,8 @@ async fn main() -> Result<()> {
     let (telemetry_tx, _) = broadcast::channel::<TelemetrySnapshot>(64);
 
     let state = Arc::new(AppState {
-        config,
+        config: RwLock::new(config),
+        config_path: cli.config.clone(),
         motors: Mutex::new(motors),
         arms: Mutex::new(arms),
         protocol: protocol_arc,

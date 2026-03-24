@@ -1,19 +1,42 @@
+import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import type { MotorInfo } from '@/lib/api'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import type { MotorInfo, JointSlot } from '@/lib/api'
+import { assignMotor, unassignMotor } from '@/lib/api'
 import { useTelemetryStore, type MotorSnapshot } from '@/stores/telemetry'
+import { LuPencil, LuX } from 'react-icons/lu'
 
 interface MotorCardProps {
   motor: MotorInfo
+  jointSlots?: JointSlot[]
+  onAssigned?: () => void
   onClick?: () => void
 }
 
-export function MotorCard({ motor, onClick }: MotorCardProps) {
+const SECTION_LABELS: Record<string, string> = {
+  arm_left: 'Left Arm',
+  arm_right: 'Right Arm',
+  waist: 'Waist',
+}
+
+export function MotorCard({ motor, jointSlots, onAssigned, onClick }: MotorCardProps) {
   const live = useTelemetryStore((s) => s.motors[motor.can_id]) as MotorSnapshot | undefined
+  const [assigning, setAssigning] = useState(false)
 
   const isOnline = live?.online ?? motor.online
   const hasFaults = (live?.faults?.length ?? 0) > 0
   const highTemp = (live?.temperature_c ?? 0) > 60
+
+  const isUnassigned = motor.joint_name.startsWith('motor_')
 
   const statusVariant = hasFaults
     ? 'destructive'
@@ -37,6 +60,39 @@ export function MotorCard({ motor, onClick }: MotorCardProps) {
         ? 'bg-emerald-500 animate-pulse'
         : 'bg-muted-foreground'
 
+  const handleAssign = async (section: string, joint: string) => {
+    setAssigning(true)
+    try {
+      const res = await assignMotor(motor.can_id, section, joint)
+      if (!res.success) {
+        console.error('Assign failed:', res.error)
+      }
+      onAssigned?.()
+    } catch (e) {
+      console.error('Assign error:', e)
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  const handleUnassign = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setAssigning(true)
+    try {
+      const res = await unassignMotor(motor.can_id)
+      if (!res.success) {
+        console.error('Unassign failed:', res.error)
+      }
+      onAssigned?.()
+    } catch (e) {
+      console.error('Unassign error:', e)
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  const slotsBySection = jointSlots ? groupSlotsBySection(jointSlots) : {}
+
   return (
     <Card
       className="cursor-pointer transition-colors hover:bg-accent/50"
@@ -44,9 +100,69 @@ export function MotorCard({ motor, onClick }: MotorCardProps) {
       onClick={onClick}
     >
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>{formatJointName(motor.joint_name)}</CardTitle>
-          <Badge variant={statusVariant} className="gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <CardTitle className="truncate">{formatJointName(motor.joint_name)}</CardTitle>
+            {jointSlots && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  className="inline-flex shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                  onClick={(e) => e.stopPropagation()}
+                  disabled={assigning}
+                >
+                  <LuPencil className="size-3" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" side="bottom" sideOffset={4}>
+                  {Object.entries(slotsBySection).map(([section, slots], si) => (
+                    <DropdownMenuGroup key={section}>
+                      {si > 0 && <DropdownMenuSeparator />}
+                      <DropdownMenuLabel>{SECTION_LABELS[section] ?? section}</DropdownMenuLabel>
+                      {slots.map((slot) => {
+                        const isSelf = slot.can_id === motor.can_id
+                        const isOccupied = slot.can_id !== null && !isSelf
+                        return (
+                          <DropdownMenuItem
+                            key={`${slot.section}-${slot.joint}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!isSelf && !assigning) {
+                                handleAssign(slot.section, slot.joint)
+                              }
+                            }}
+                            className={isSelf ? 'text-emerald-400' : isOccupied ? 'opacity-50' : ''}
+                          >
+                            <span>{formatJointName(slot.joint)}</span>
+                            {isSelf && (
+                              <span className="ml-auto text-[10px] text-emerald-400/70">current</span>
+                            )}
+                            {isOccupied && (
+                              <span className="ml-auto text-[10px] text-muted-foreground">ID {slot.can_id}</span>
+                            )}
+                          </DropdownMenuItem>
+                        )
+                      })}
+                    </DropdownMenuGroup>
+                  ))}
+                  {!isUnassigned && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleUnassign(e as unknown as React.MouseEvent)
+                        }}
+                        className="text-destructive"
+                      >
+                        <LuX className="size-3" />
+                        Unassign
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
+          <Badge variant={statusVariant} className="gap-1.5 shrink-0">
             <span className={`inline-block size-1.5 rounded-full ${dotColor}`} />
             {statusLabel}
           </Badge>
@@ -111,4 +227,13 @@ function formatJointName(name: string): string {
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ')
+}
+
+function groupSlotsBySection(slots: JointSlot[]): Record<string, JointSlot[]> {
+  const groups: Record<string, JointSlot[]> = {}
+  for (const slot of slots) {
+    if (!groups[slot.section]) groups[slot.section] = []
+    groups[slot.section].push(slot)
+  }
+  return groups
 }

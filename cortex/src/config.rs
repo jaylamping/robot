@@ -267,6 +267,80 @@ impl RobotConfig {
             .with_context(|| "Failed to parse robot.yaml")?;
         Ok(config)
     }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let yaml = serde_yaml::to_string(self)
+            .with_context(|| "Failed to serialize config to YAML")?;
+        let header = "# Robot hardware configuration\n\
+                      # Auto-saved by Link — manual comments are not preserved.\n\n";
+        std::fs::write(path.as_ref(), format!("{}{}", header, yaml))
+            .with_context(|| format!("Failed to write config: {}", path.as_ref().display()))?;
+        Ok(())
+    }
+
+    /// Clear any existing assignment of `can_id` across all sections.
+    pub fn clear_can_id(&mut self, can_id: u8) {
+        if let Some(ref mut arm) = self.arm_left {
+            arm.clear_can_id(can_id);
+        }
+        if let Some(ref mut arm) = self.arm_right {
+            arm.clear_can_id(can_id);
+        }
+        if let Some(ref mut waist) = self.waist {
+            for joint in waist.values_mut() {
+                if joint.can_id == Some(can_id) {
+                    joint.can_id = None;
+                }
+            }
+        }
+    }
+
+    /// Assign `can_id` to a specific section+joint. Returns Err if the slot doesn't exist.
+    pub fn assign_can_id(&mut self, section: &str, joint: &str, can_id: u8) -> Result<()> {
+        self.clear_can_id(can_id);
+
+        match section {
+            "arm_left" => {
+                let arm = self.arm_left.as_mut()
+                    .with_context(|| "arm_left section not configured")?;
+                arm.set_can_id(joint, Some(can_id))
+                    .with_context(|| format!("unknown joint '{}' in arm_left", joint))?;
+            }
+            "arm_right" => {
+                let arm = self.arm_right.as_mut()
+                    .with_context(|| "arm_right section not configured")?;
+                arm.set_can_id(joint, Some(can_id))
+                    .with_context(|| format!("unknown joint '{}' in arm_right", joint))?;
+            }
+            "waist" => {
+                let waist = self.waist.as_mut()
+                    .with_context(|| "waist section not configured")?;
+                let jc = waist.get_mut(joint)
+                    .with_context(|| format!("unknown joint '{}' in waist", joint))?;
+                jc.can_id = Some(can_id);
+            }
+            _ => anyhow::bail!("unknown section '{}'", section),
+        }
+        Ok(())
+    }
+
+    /// List all available joint slots with their current CAN ID assignment.
+    pub fn joint_slots(&self) -> Vec<(String, String, Option<u8>)> {
+        let mut slots = Vec::new();
+        for (section, arm_opt) in [("arm_left", &self.arm_left), ("arm_right", &self.arm_right)] {
+            if let Some(arm) = arm_opt {
+                for (name, joint) in arm.joints() {
+                    slots.push((section.to_string(), name.to_string(), joint.can_id));
+                }
+            }
+        }
+        if let Some(ref waist) = self.waist {
+            for (name, joint) in waist {
+                slots.push(("waist".to_string(), name.clone(), joint.can_id));
+            }
+        }
+        slots
+    }
 }
 
 impl ArmConfig {
@@ -279,10 +353,38 @@ impl ArmConfig {
         ]
     }
 
+    pub fn joints_mut(&mut self) -> [(&str, &mut JointConfig); 4] {
+        [
+            ("shoulder_pitch", &mut self.shoulder_pitch),
+            ("shoulder_roll", &mut self.shoulder_roll),
+            ("upper_arm_yaw", &mut self.upper_arm_yaw),
+            ("elbow_pitch", &mut self.elbow_pitch),
+        ]
+    }
+
     pub fn active_joints(&self) -> Vec<(&str, &JointConfig)> {
         self.joints()
             .into_iter()
             .filter(|(_, j)| j.can_id.is_some())
             .collect()
+    }
+
+    pub fn clear_can_id(&mut self, can_id: u8) {
+        for (_, joint) in self.joints_mut() {
+            if joint.can_id == Some(can_id) {
+                joint.can_id = None;
+            }
+        }
+    }
+
+    /// Set the CAN ID for a named joint. Returns Ok(()) if the joint exists, Err otherwise.
+    pub fn set_can_id(&mut self, joint_name: &str, can_id: Option<u8>) -> Result<()> {
+        for (name, joint) in self.joints_mut() {
+            if name == joint_name {
+                joint.can_id = can_id;
+                return Ok(());
+            }
+        }
+        anyhow::bail!("unknown joint '{}'", joint_name)
     }
 }

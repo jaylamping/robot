@@ -233,3 +233,26 @@ export function getSequences(): Promise<SequenceInfo[]> {
 export function runSequence(name: string): Promise<CommandResponse> {
   return fetchJson(`/sequences/${name}/run`, { method: 'POST' })
 }
+
+export interface JointSlot {
+  section: string
+  joint: string
+  can_id: number | null
+  display_name: string
+}
+
+export function getJointSlots(): Promise<JointSlot[]> {
+  return fetchJson('/joint-slots')
+}
+
+export function assignMotor(id: number, section: string, joint: string): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ section, joint }),
+  })
+}
+
+export function unassignMotor(id: number): Promise<CommandResponse> {
+  return fetchJson(`/motors/${id}/unassign`, { method: 'POST' })
+}

@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
-import { getMotors, getConfig, discoverMotors, type MotorInfo, type RobotConfig, type DiscoverResult } from '@/lib/api'
+import { getMotors, getConfig, getJointSlots, discoverMotors, type MotorInfo, type RobotConfig, type JointSlot, type DiscoverResult } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { MotorCard } from '@/components/MotorCard'
 import { RobotDiagram } from '@/components/RobotDiagram'
@@ -15,6 +15,7 @@ export const Route = createFileRoute('/')({
 function OverviewPage() {
   const [motors, setMotors] = useState<MotorInfo[]>([])
   const [config, setConfig] = useState<RobotConfig | null>(null)
+  const [jointSlots, setJointSlots] = useState<JointSlot[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState(false)
@@ -23,8 +24,8 @@ function OverviewPage() {
   const telemetryMotors = useTelemetryStore((s) => s.motors)
 
   const refreshMotors = useCallback(() => {
-    return Promise.all([getMotors(), getConfig()])
-      .then(([m, c]) => { setMotors(m); setConfig(c); setError(null) })
+    return Promise.all([getMotors(), getConfig(), getJointSlots()])
+      .then(([m, c, s]) => { setMotors(m); setConfig(c); setJointSlots(s); setError(null) })
       .catch((e) => setError(e.message))
   }, [])
 
@@ -154,6 +155,8 @@ function OverviewPage() {
               <MotorCard
                 key={motor.can_id}
                 motor={motor}
+                jointSlots={jointSlots}
+                onAssigned={refreshMotors}
                 onClick={() => navigate({ to: '/motor/$id', params: { id: String(motor.can_id) } })}
               />
             ))}
@@ -171,6 +174,8 @@ function OverviewPage() {
               <MotorCard
                 key={motor.can_id}
                 motor={motor}
+                jointSlots={jointSlots}
+                onAssigned={refreshMotors}
                 onClick={() => navigate({ to: '/motor/$id', params: { id: String(motor.can_id) } })}
               />
             ))}

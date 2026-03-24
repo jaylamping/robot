@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Router;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -20,7 +20,8 @@ use crate::log_buffer::LogBuffer;
 use crate::telemetry::TelemetrySnapshot;
 
 pub struct AppState {
-    pub config: RobotConfig,
+    pub config: RwLock<RobotConfig>,
+    pub config_path: String,
     pub motors: Mutex<HashMap<u8, Motor>>,
     pub arms: Mutex<HashMap<String, Arm>>,
     pub protocol: Option<Arc<Mutex<Protocol>>>,
