@@ -33,7 +33,7 @@ The `robstride` Rust crate's `CH341Transport` handles this protocol natively.
 **Written in Rust** for performance, safety, and skill development. The repo is a **Cargo workspace** with two crates plus a React frontend:
 
 ```
-Cargo.toml             Workspace root (members: cortex, link-server)
+Cargo.toml             Workspace root (members: cortex, navi)
 cortex/                Motor control, arm coordination, config ("brain stem")
   src/
     lib.rs             Crate root (pub mod config, motor, arm)
@@ -46,9 +46,9 @@ cortex/                Motor control, arm coordination, config ("brain stem")
     wave_demo.rs       Arm wave demo (Phase 1 milestone)
   tests/
     motor_test.rs      Integration tests (hardware-in-the-loop)
-link-server/           Web server + telemetry (axum, WebTransport)
+navi/                  Web server + telemetry (axum, WebTransport); pairs with `link/` frontend
   src/
-    main.rs            `link` binary entry point (clap CLI)
+    main.rs            `navi` binary entry point (clap CLI)
     lib.rs             AppState, build_router, module re-exports
     api.rs             REST API endpoints (/api/config, /api/motors, etc.)
     telemetry.rs       Motor polling loop + WebTransport datagram streaming
@@ -59,22 +59,22 @@ robstride-local/       Patched robstride crate (socketcan optional)
 
 ### Key Crate Dependencies
 - `cortex` — our motor control crate (motor, arm, config). Import as `use cortex::motor::Motor` etc. Has `socketcan` feature flag.
-- `link-server` — our web/telemetry crate. The `link` binary lives here. Has `socketcan` feature flag (passes through to cortex).
+- `navi` — our web/telemetry crate. The `navi` binary lives here. Has `socketcan` feature flag (passes through to cortex).
 - `robstride` (v0.3.6, **local patch** in `robstride-local/`) — RS03 CAN protocol, CH341Transport (AT serial), SocketCanTransport (Linux), multi-motor Supervisor. Patched to make `socketcan` optional (Linux-only; fails to build on Windows otherwise).
 - `tokio` — async runtime (required by robstride's async Transport trait)
 - `serde` + `serde_yaml` — typed config deserialization
 - `tracing` + `tracing-subscriber` — structured logging
 - `anyhow` — ergonomic error handling
-- `axum` + `tower-http` — HTTP server and middleware (in link-server)
-- `wtransport` — WebTransport/QUIC for real-time telemetry datagrams (in link-server)
-- `clap` — CLI argument parsing (in link-server)
+- `axum` + `tower-http` — HTTP server and middleware (in navi)
+- `wtransport` — WebTransport/QUIC for real-time telemetry datagrams (in navi)
+- `clap` — CLI argument parsing (in navi)
 
 ### Transport Architecture
 The `cortex::motor::create_protocol(bus: &BusConfig)` factory dispatches based on `bus.transport`:
 - `"ch341"` (default) → `CH341Transport` via serial AT-framed protocol (Windows/USB)
 - `"socketcan"` → `SocketCanTransport` via Linux SocketCAN (Pi 5/HAT) — requires `socketcan` feature
 
-**Feature flag chain:** `link-server/socketcan` → `cortex/socketcan` → `robstride/socketcan`
+**Feature flag chain:** `navi/socketcan` → `cortex/socketcan` → `robstride/socketcan`
 - **Windows build:** `cargo build` (no socketcan feature, uses CH341)
 - **Pi build:** `cargo build --features socketcan`
 
@@ -107,7 +107,7 @@ RS03 MIT control limits (from RobStride03Command normalization):
 Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) when testing new configurations.
 
 ## Key Facts
-- The repo is a **Cargo workspace** — `cortex` (motor/arm/config) and `link-server` (web/telemetry). Use `cortex::` for motor imports, not `robot::`.
+- The repo is a **Cargo workspace** — `cortex` (motor/arm/config) and `navi` (web/telemetry). Use `cortex::` for motor imports, not `robot::`.
 - RS03 default CAN ID is **127** (not 1)
 - Host CAN ID is **0xAA**
 - MotorStudio must be CLOSED before the program can use COM5
@@ -120,7 +120,7 @@ Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) w
 - **Do NOT use RunMode parameter writes** — they are silently rejected by our RS03 firmware
 - CAN2USB debugger DIP switch must be in position **2** (position 1 causes hangs)
 - `config/robot.yaml` has `bus.transport` field (`"ch341"` or `"socketcan"`) and `bus.socketcan_interface` (e.g. `"can0"`)
-- The `link` binary accepts `--config <path>` to override the default `config/robot.yaml` path
+- The `navi` binary accepts `--config <path>` to override the default `config/robot.yaml` path
 
 ## Link Frontend (React)
 The `link/` directory is a React app — the primary interaction layer between the user and the robot (not just a "dashboard").
@@ -138,7 +138,7 @@ The `link/` directory is a React app — the primary interaction layer between t
 - `link/src/hooks/useWebTransport.ts` — WebTransport connection hook
 - `link/src/lib/api.ts` — REST API client functions (motor CRUD + spin/torque/jog/stop/estop + sequences)
 
-**Dev workflow:** `cargo run -p link-server --bin link -- --no-hardware` starts the server with mock telemetry on http://localhost:8080. Run `cd link && npm run dev` for Vite HMR on port 5173 (proxied to 8080). For production, `cd link && npm run build` then the `link` binary serves the built frontend from `link/dist/`.
+**Dev workflow:** `cargo run -p navi --bin navi -- --no-hardware` starts the server with mock telemetry on http://localhost:8080. Run `cd link && npm run dev` for Vite HMR on port 5173 (proxied to 8080). For production, `cd link && npm run build` then the `navi` binary serves the built frontend from `link/dist/`.
 
 **Status:** Functional with Overview, System, Arms, Test, Settings, and Logs pages. Test Panel has motor selector, live telemetry readout, 5 control tabs (Jog/Spin/Torque/Position/Raw MIT), sequence runner, and global E-STOP. UI polish is ongoing.
 Overview now includes a live Pi telemetry card (CPU usage, memory usage, and temperature when available) from the backend telemetry stream.
@@ -148,7 +148,7 @@ Overview now includes a live Pi telemetry card (CPU usage, memory usage, and tem
 - **Pi 5 (robot.local):** Raspberry Pi 5, Ubuntu (kernel 6.17), hostname `robot.local`, user `joey`, NOPASSWD sudo. SSH key auth configured from dev machine.
   - **CAN HAT:** Waveshare 2-CH Isolated CAN HAT — MCP2515 overlays in `/boot/firmware/config.txt` (INT_0=GPIO23, INT_1=GPIO25, oscillator=16MHz). Both `can0` and `can1` detected.
   - **`can-setup.service`:** systemd oneshot, brings up `can0` at 1 Mbps on boot. Enabled.
-  - **`link.service`:** systemd service, runs `link --config config/robot.yaml` as user `joey` from `/home/joey/mr_robot`. Depends on `can-setup.service`. Enabled and running.
+  - **`link.service`:** systemd service, runs `navi --config config/robot.yaml` as user `joey` from `/home/joey/mr_robot` (update `ExecStart` to `target/release/navi`). Depends on `can-setup.service`. Enabled and running.
   - **Rust:** 1.94.0 installed via rustup, build-essential + pkg-config installed.
   - **Repo path on Pi:** `/home/joey/mr_robot` (cloned from GitHub). Pi's `config/robot.yaml` has `transport: socketcan` (local edit, not committed).
   - **Build on Pi:** `cd ~/mr_robot && cargo build --release --features socketcan`
@@ -172,16 +172,16 @@ Key `bus:` fields:
 - `socketcan_interface`: SocketCAN interface name (e.g. `"can0"`) — ignored when transport is ch341
 - `baud`, `can_bitrate`, `host_id`: shared across transports
 
-The `link` binary accepts `--config <path>` (default `config/robot.yaml`) so the Pi can use a local config with `transport: socketcan` without modifying the repo's config.
+The `navi` binary accepts `--config <path>` (default `config/robot.yaml`) so the Pi can use a local config with `transport: socketcan` without modifying the repo's config.
 
 ## Rust Environment
 - Rust stable toolchain (MSVC target on Windows, aarch64-unknown-linux-gnu on Pi)
-- Build: `cargo build`, `cargo run -p cortex --bin probe`, `cargo run -p link-server --bin link`, etc.
+- Build: `cargo build`, `cargo run -p cortex --bin probe`, `cargo run -p navi --bin navi`, etc.
 - Build with SocketCAN (Pi only): `cargo build --features socketcan`
 - Dependencies managed via workspace `Cargo.toml` + per-crate `Cargo.toml`
 
 ## REST API Endpoints
-All under `/api` prefix (served by link-server):
+All under `/api` prefix (served by navi):
 
 **Motor commands:**
 - `GET /api/motors` — list all motors

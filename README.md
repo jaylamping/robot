@@ -25,7 +25,7 @@ This is a from-scratch build — custom mechanical design, custom wiring, revers
 This is a **Cargo workspace** with two Rust crates and a React frontend:
 
 ```
-Cargo.toml                  Workspace root (members: cortex, link-server)
+Cargo.toml                  Workspace root (members: cortex, navi)
 
 cortex/                     Motor control, arm coordination, config ("brain stem")
   src/
@@ -38,9 +38,9 @@ cortex/                     Motor control, arm coordination, config ("brain stem
     motor_repl.rs           Interactive motor REPL for testing/tuning
     wave_demo.rs            Arm wave demo (Phase 1 milestone)
 
-link-server/                Web server + real-time telemetry
+navi/                       Web server + real-time telemetry (pairs with `link/` frontend)
   src/
-    main.rs                 `link` binary entry point (clap CLI)
+    main.rs                 `navi` binary entry point (clap CLI)
     lib.rs                  AppState, router, module re-exports
     api.rs                  REST API endpoints (/api/config, /api/motors, etc.)
     telemetry.rs            Motor polling loop + WebTransport datagram streaming
@@ -81,17 +81,17 @@ cargo run -p cortex --bin motor_repl
 cargo run -p cortex --bin wave_demo
 ```
 
-### `link-server` — Web Server & Telemetry
+### `navi` — Web Server & Telemetry
 
 Serves the Link frontend and provides two communication channels:
 
 - **REST API** (`/api/*`) — Motor commands (enable, disable, move, zero), arm coordination (pose, home), config, logs, server status.
 - **WebTransport** — Real-time motor telemetry (position, velocity, torque, temperature) streamed as QUIC datagrams at high frequency.
 
-The single binary is called `link`:
+The single binary is called `navi`:
 ```bash
-cargo run -p link-server --bin link                  # with hardware
-cargo run -p link-server --bin link -- --no-hardware  # mock telemetry, no CAN
+cargo run -p navi --bin navi                  # with hardware
+cargo run -p navi --bin navi -- --no-hardware  # mock telemetry, no CAN
 ```
 
 ### `link` — React Frontend
@@ -105,8 +105,8 @@ See [`link/README.md`](link/README.md) for the full frontend stack, API referenc
 ```bash
 cd link
 npm install
-npm run dev       # Vite HMR on port 5173, proxied to link-server on 8080
-npm run build     # Production build → dist/ (served by link-server)
+npm run dev       # Vite HMR on port 5173, proxied to navi on 8080
+npm run build     # Production build → dist/ (served by navi)
 ```
 
 ## Hardware
@@ -145,7 +145,7 @@ cargo run -p cortex --bin motor_repl  # interactive motor shell
 
 ```bash
 # Terminal 1 — backend with mock telemetry
-cargo run -p link-server --bin link -- --no-hardware
+cargo run -p navi --bin navi -- --no-hardware
 
 # Terminal 2 — frontend with HMR
 cd link && npm run dev

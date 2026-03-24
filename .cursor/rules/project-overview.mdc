@@ -26,7 +26,7 @@ alwaysApply: true
 
 ## Software Stack
 - **Language:** Rust (stable toolchain, MSVC on Windows, aarch64-linux on Pi)
-- **Workspace:** Cargo workspace at repo root with two crates: `cortex` and `link-server` (both have `socketcan` feature flag)
+- **Workspace:** Cargo workspace at repo root with two crates: `cortex` and `navi` (both have `socketcan` feature flag)
 - **Key crate:** `robstride` (v0.3+, local patch at `robstride-local/`) — CH341Transport for CAN2USB, SocketCanTransport for Pi, RS03 protocol, async API
 - **Runtime:** tokio (async, required by robstride Transport trait)
 - **Config:** `serde` + `serde_yaml` for `config/robot.yaml`
@@ -37,10 +37,10 @@ alwaysApply: true
   - `cortex/src/bin/probe.rs` — hardware probe / connectivity smoke test
   - `cortex/src/bin/motor_repl.rs` — interactive motor REPL for testing/tuning
   - `cortex/src/bin/wave_demo.rs` — arm wave demo (Phase 1 milestone)
-- **`link-server/`** — web server and telemetry (axum + WebTransport)
-  - `link-server/src/main.rs` — `link` binary entry point (`--config`, `--no-hardware`, `--port`, `--wt-port`)
-  - `link-server/src/api.rs` — REST API endpoints (motor CRUD, spin/torque/jog/stop/estop, arms, sequences)
-  - `link-server/src/telemetry.rs` — motor polling + WebTransport datagram streaming
+- **`navi/`** — web server and telemetry (axum + WebTransport); pairs with `link/` frontend
+  - `navi/src/main.rs` — `navi` binary entry point (`--config`, `--no-hardware`, `--port`, `--wt-port`)
+  - `navi/src/api.rs` — REST API endpoints (motor CRUD, spin/torque/jog/stop/estop, arms, sequences)
+  - `navi/src/telemetry.rs` — motor polling + WebTransport datagram streaming
 - **`link/`** — React frontend (Vite + TanStack Router + Tailwind)
   - Test Panel (`link/src/routes/test.tsx`) — motor jog/spin/torque/position/raw controls, sequence runner, global E-STOP
 - Config lives in `config/robot.yaml` (transport: ch341 or socketcan)
@@ -50,8 +50,8 @@ alwaysApply: true
 - "Link" is the primary interaction layer with the robot, not just a dashboard
 - Pages: Overview, System, Arms, **Test** (motor controls + sequences), Settings, Logs
 - Overview page includes live Pi telemetry card (CPU usage, memory usage, and temperature when sensor is available)
-- Dev: `cargo run -p link-server --bin link -- --no-hardware` for mock telemetry, `cd link && npm run dev` for HMR
-- Production: `cd link && npm run build`, then `link` binary serves from `link/dist/`
+- Dev: `cargo run -p navi --bin navi -- --no-hardware` for mock telemetry, `cd link && npm run dev` for HMR
+- Production: `cd link && npm run build`, then `navi` binary serves from `link/dist/`
 - Status: functional with test panel for remote motor control via browser
 
 ## Deployment
@@ -73,5 +73,5 @@ alwaysApply: true
 - Frontend served from the robot itself (not cloud-hosted)
 - Repo is a Cargo workspace — use `cortex::` for imports, not `robot::`
 - Transport selection via `config/robot.yaml` `bus.transport` field: `"ch341"` (Windows) or `"socketcan"` (Pi)
-- `link` binary accepts `--config <path>` for deployment-specific config
+- `navi` binary accepts `--config <path>` for deployment-specific config
 - Waveshare CAN HAT interrupt pins: CAN_0=GPIO23, CAN_1=GPIO25 (verified from wiki, NOT GPIO25/24 as some docs say)

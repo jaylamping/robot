@@ -1217,28 +1217,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
-name = "link-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "base64",
- "clap",
- "cortex",
- "robstride",
- "rustls",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "wtransport",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1364,6 +1342,28 @@ dependencies = [
  "nix 0.29.0",
  "serialport",
  "winapi",
+]
+
+[[package]]
+name = "navi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "base64",
+ "clap",
+ "cortex",
+ "robstride",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "wtransport",
 ]
 
 [[package]]

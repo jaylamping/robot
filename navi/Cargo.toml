@@ -1,5 +1,5 @@
 [package]
-name = "link-server"
+name = "navi"
 version = "0.1.0"
 edition = "2024"
 
@@ -26,5 +26,5 @@ wtransport = "0.7"
 base64 = "0.22"
 
 [[bin]]
-name = "link"
+name = "navi"
 path = "src/main.rs"

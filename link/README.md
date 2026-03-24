@@ -39,7 +39,7 @@ Real-time motor telemetry, arm coordination, and direct actuator control — ser
 ### Prerequisites
 
 - Node.js v24+ (or use `nvm use` to pick up `.nvmrc`)
-- The `link-server` backend running on port 8080
+- The `navi` backend running on port 8080
 
 ### Install
 
@@ -59,7 +59,7 @@ npm run dev
 To run the backend in mock mode (no hardware required):
 
 ```sh
-cargo run -p link-server --bin link -- --no-hardware
+cargo run -p navi --bin navi -- --no-hardware
 ```
 
 Then open http://localhost:5173.
@@ -70,7 +70,7 @@ Then open http://localhost:5173.
 npm run build
 ```
 
-This runs `tsc` (type-check only, no emit) then `vite build`. Output goes to `dist/`, which the `link-server` binary serves automatically at http://localhost:8080.
+This runs `tsc` (type-check only, no emit) then `vite build`. Output goes to `dist/`, which the `navi` binary serves automatically at http://localhost:8080.
 
 ## Project Structure
 
@@ -105,7 +105,7 @@ src/
 
 ## API
 
-Link communicates with `link-server` over two channels:
+Link communicates with `navi` over two channels:
 
 ### REST (`/api/*`)
 

@@ -25,7 +25,7 @@ jobs:
       - name: Rust checks (workspace + socketcan path)
         run: |
           cargo check --workspace
-          cargo check -p link-server --features socketcan
+          cargo check -p navi --features socketcan
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

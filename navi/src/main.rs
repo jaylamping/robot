@@ -17,14 +17,14 @@ use wtransport::Identity;
 use cortex::arm::Arm;
 use cortex::config::RobotConfig;
 use cortex::motor::{create_protocol, Motor};
-use link_server::log_buffer::LogBuffer;
-use link_server::telemetry::{self, TelemetrySnapshot};
-use link_server::{self, AppState};
+use navi::log_buffer::LogBuffer;
+use navi::telemetry::{self, TelemetrySnapshot};
+use navi::{self, AppState};
 
 #[derive(Parser)]
 #[command(
-    name = "link",
-    about = "Robot Link — telemetry server and control interface"
+    name = "navi",
+    about = "Navi — telemetry server and control API for the Link frontend"
 )]
 struct Cli {
     /// Run without hardware (mock telemetry for frontend development)
@@ -180,10 +180,10 @@ async fn main() -> Result<()> {
         telemetry::webtransport_server(wt_state, wt_port, wt_identity).await;
     });
 
-    let app = link_server::build_router(state.clone());
+    let app = navi::build_router(state.clone());
     let addr = SocketAddr::from(([0, 0, 0, 0], cli.port));
-    info!("Link HTTPS server starting on https://{}", addr);
-    info!("Link WebTransport server on port {}", cli.wt_port);
+    info!("Navi HTTPS server starting on https://{}", addr);
+    info!("Navi WebTransport server on port {}", cli.wt_port);
 
     let handle = axum_server::Handle::new();
     let shutdown_handle = handle.clone();
