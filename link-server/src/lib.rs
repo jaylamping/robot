@@ -14,6 +14,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use cortex::arm::Arm;
 use cortex::config::RobotConfig;
 use cortex::motor::Motor;
+use robstride::Protocol;
 
 use crate::log_buffer::LogBuffer;
 use crate::telemetry::TelemetrySnapshot;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub config: RobotConfig,
     pub motors: Mutex<HashMap<u8, Motor>>,
     pub arms: Mutex<HashMap<String, Arm>>,
+    pub protocol: Option<Arc<Mutex<Protocol>>>,
     pub telemetry_tx: broadcast::Sender<TelemetrySnapshot>,
     pub cert_hash_b64: String,
     pub wt_port: u16,

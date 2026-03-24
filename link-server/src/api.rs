@@ -6,6 +6,9 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tracing::info;
+
+use cortex::motor::Motor;
 
 use crate::AppState;
 use crate::telemetry::build_joint_name_map;
@@ -142,6 +145,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/estop", post(estop_all))
         .route("/sequences", get(list_sequences))
         .route("/sequences/{name}/run", post(run_sequence))
+        .route("/discover", post(discover_motors))
         .route("/logs", get(get_logs))
 }
 
@@ -718,6 +722,69 @@ async fn run_sequence(
         })),
         _ => Err(StatusCode::NOT_FOUND),
     }
+}
+
+#[derive(Serialize)]
+struct DiscoverResult {
+    discovered: Vec<u8>,
+    removed: Vec<u8>,
+    total: usize,
+}
+
+async fn discover_motors(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let protocol = state.protocol.as_ref().ok_or_else(|| {
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let mut motors = state.motors.lock().await;
+
+    let mut discovered: Vec<u8> = Vec::new();
+    let mut removed: Vec<u8> = Vec::new();
+
+    for can_id in 1..=127u8 {
+        let mut probe = Motor::new(protocol.clone(), can_id);
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            probe.read_state(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                if !motors.contains_key(&can_id) {
+                    info!(can_id, "discover: new motor found");
+                    motors.insert(can_id, Motor::new(protocol.clone(), can_id));
+                    discovered.push(can_id);
+                }
+            }
+            _ => {
+                if motors.contains_key(&can_id) {
+                    info!(can_id, "discover: motor no longer responding, removing");
+                    if let Some(mut motor) = motors.remove(&can_id) {
+                        let _ = motor.disable().await;
+                    }
+                    removed.push(can_id);
+                }
+            }
+        }
+    }
+
+    let total = motors.len();
+    drop(motors);
+
+    info!(
+        found = discovered.len(),
+        removed = removed.len(),
+        total,
+        "discovery scan complete"
+    );
+
+    Ok(Json(DiscoverResult {
+        discovered,
+        removed,
+        total,
+    }))
 }
 
 fn find_joint_config(state: &AppState, can_id: u8) -> (String, (f64, f64)) {

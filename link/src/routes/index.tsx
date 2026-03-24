@@ -1,11 +1,12 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
-import { getMotors, getConfig, type MotorInfo, type RobotConfig } from '@/lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { getMotors, getConfig, discoverMotors, type MotorInfo, type RobotConfig, type DiscoverResult } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { MotorCard } from '@/components/MotorCard'
 import { RobotDiagram } from '@/components/RobotDiagram'
 import { Badge } from '@/components/ui/badge'
-import { LuBot } from 'react-icons/lu'
+import { Button } from '@/components/ui/button'
+import { LuBot, LuRadar } from 'react-icons/lu'
 
 export const Route = createFileRoute('/')({
   component: OverviewPage,
@@ -16,15 +17,34 @@ function OverviewPage() {
   const [config, setConfig] = useState<RobotConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(null)
   const navigate = useNavigate()
   const telemetryMotors = useTelemetryStore((s) => s.motors)
 
-  useEffect(() => {
-    Promise.all([getMotors(), getConfig()])
-      .then(([m, c]) => { setMotors(m); setConfig(c) })
+  const refreshMotors = useCallback(() => {
+    return Promise.all([getMotors(), getConfig()])
+      .then(([m, c]) => { setMotors(m); setConfig(c); setError(null) })
       .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    refreshMotors().finally(() => setLoading(false))
+  }, [refreshMotors])
+
+  const handleDiscover = async () => {
+    setDiscovering(true)
+    setDiscoverResult(null)
+    try {
+      const result = await discoverMotors()
+      setDiscoverResult(result)
+      await refreshMotors()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Discovery failed')
+    } finally {
+      setDiscovering(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -68,7 +88,19 @@ function OverviewPage() {
   return (
     <div>
       <div className="mb-6">
-        <h2 className="text-xl font-semibold">Overview</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Overview</h2>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDiscover}
+            disabled={discovering}
+            className="gap-2"
+          >
+            <LuRadar className={`size-4 ${discovering ? 'animate-spin' : ''}`} />
+            {discovering ? 'Scanning...' : 'Discover'}
+          </Button>
+        </div>
         <div className="mt-2 flex flex-wrap gap-2">
           <Badge variant="outline">{motors.length} configured</Badge>
           {onlineCount > 0 && (
@@ -83,6 +115,23 @@ function OverviewPage() {
             <Badge variant="destructive">{faultCount} faulted</Badge>
           )}
         </div>
+        {discoverResult && (
+          <div className="mt-3 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm">
+            {discoverResult.discovered.length > 0 && (
+              <p className="text-emerald-400">
+                Found: {discoverResult.discovered.map(id => `motor ${id}`).join(', ')}
+              </p>
+            )}
+            {discoverResult.removed.length > 0 && (
+              <p className="text-amber-400">
+                Removed: {discoverResult.removed.map(id => `motor ${id}`).join(', ')}
+              </p>
+            )}
+            {discoverResult.discovered.length === 0 && discoverResult.removed.length === 0 && (
+              <p className="text-muted-foreground">No changes — {discoverResult.total} motor(s) online</p>
+            )}
+          </div>
+        )}
       </div>
 
       {config && (

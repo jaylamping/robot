@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
     let mut motors: HashMap<u8, Motor> = HashMap::new();
     let mut arms: HashMap<String, Arm> = HashMap::new();
     let transport_type;
+    let protocol_arc;
 
     if !cli.no_hardware {
         let protocol = create_protocol(&config.bus).await?;
@@ -81,8 +82,10 @@ async fn main() -> Result<()> {
         if let Some(ref arm_cfg) = config.arm_right {
             arms.insert("right".into(), Arm::new(arm_cfg, protocol.clone()));
         }
+        protocol_arc = Some(protocol);
     } else {
         transport_type = "Mock".to_string();
+        protocol_arc = None;
         info!("--no-hardware: running with mock telemetry");
     }
 
@@ -113,6 +116,7 @@ async fn main() -> Result<()> {
         config,
         motors: Mutex::new(motors),
         arms: Mutex::new(arms),
+        protocol: protocol_arc,
         telemetry_tx,
         cert_hash_b64,
         wt_port: cli.wt_port,

@@ -179,6 +179,16 @@ export function setArmPose(side: string, pose: PoseRequest): Promise<CommandResp
   })
 }
 
+export interface DiscoverResult {
+  discovered: number[]
+  removed: number[]
+  total: number
+}
+
+export function discoverMotors(): Promise<DiscoverResult> {
+  return fetchJson('/discover', { method: 'POST' })
+}
+
 export interface SequenceInfo {
   name: string
   description: string

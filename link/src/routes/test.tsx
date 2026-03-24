@@ -13,6 +13,7 @@ import {
   jogMotor,
   stopMotor,
   estopAll,
+  discoverMotors,
   getSequences,
   runSequence,
   type MotorInfo,
@@ -42,7 +43,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { LuOctagonX } from 'react-icons/lu'
+import { LuOctagonX, LuRadar } from 'react-icons/lu'
 
 export const Route = createFileRoute('/test')({
   component: TestPage,
@@ -54,6 +55,15 @@ function TestPage() {
   const [selectedMotorId, setSelectedMotorId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
+
+  const refreshMotors = useCallback(async () => {
+    const m = await getMotors()
+    setMotors(m)
+    if (m.length > 0 && (selectedMotorId === null || !m.some(x => x.can_id === selectedMotorId))) {
+      setSelectedMotorId(m[0].can_id)
+    }
+  }, [selectedMotorId])
 
   useEffect(() => {
     Promise.all([getMotors(), getSequences()])
@@ -67,6 +77,29 @@ function TestPage() {
       .catch((e) => toast.error('Failed to load', { description: e.message }))
       .finally(() => setLoading(false))
   }, [])
+
+  const handleDiscover = useCallback(async () => {
+    setDiscovering(true)
+    try {
+      const result = await discoverMotors()
+      if (result.discovered.length > 0) {
+        toast.success(`Discovered ${result.discovered.length} motor(s)`, {
+          description: `CAN IDs: ${result.discovered.join(', ')}`,
+        })
+      } else if (result.removed.length > 0) {
+        toast.info(`Removed ${result.removed.length} offline motor(s)`)
+      } else {
+        toast.info(`No changes — ${result.total} motor(s) online`)
+      }
+      await refreshMotors()
+    } catch (e) {
+      toast.error('Discovery failed', {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setDiscovering(false)
+    }
+  }, [refreshMotors])
 
   const exec = useCallback(async (label: string, fn: () => Promise<CommandResponse>) => {
     setBusy(true)
@@ -122,16 +155,28 @@ function TestPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold">Test Panel</h2>
-        <Button
-          variant="destructive"
-          size="lg"
-          className="gap-2 font-bold"
-          onClick={handleEstop}
-          disabled={busy}
-        >
-          <LuOctagonX className="size-5" />
-          E-STOP ALL
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDiscover}
+            disabled={discovering || busy}
+            className="gap-2"
+          >
+            <LuRadar className={`size-4 ${discovering ? 'animate-spin' : ''}`} />
+            {discovering ? 'Scanning...' : 'Discover'}
+          </Button>
+          <Button
+            variant="destructive"
+            size="lg"
+            className="gap-2 font-bold"
+            onClick={handleEstop}
+            disabled={busy}
+          >
+            <LuOctagonX className="size-5" />
+            E-STOP ALL
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
