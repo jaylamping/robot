@@ -10,6 +10,7 @@ import {
   useSetArmPoseMutation,
   useUpdateJointLimitsMutation,
   useUpdateJointHomeMutation,
+  useMoveMotorMutation,
 } from '@/lib/mutations/robot'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { PoseEditor } from '@/components/PoseEditor'
@@ -250,23 +251,29 @@ function JointSlider({
   const [editMax, setEditMax] = useState('')
   const [editHome, setEditHome] = useState('')
   const [saving, setSaving] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [dragDeg, setDragDeg] = useState<number | null>(null)
   const limitsMut = useUpdateJointLimitsMutation()
   const homeMut = useUpdateJointHomeMutation()
+  const moveMut = useMoveMotorMutation()
 
   const minDeg = (joint.limits[0] * 180) / Math.PI
   const maxDeg = (joint.limits[1] * 180) / Math.PI
   const currentDeg = motor ? (motor.angle_rad * 180) / Math.PI : null
   const isOnline = motor?.online ?? false
+  const canMove = isOnline && joint.can_id != null
 
   const homeDeg = (joint.home_rad * 180) / Math.PI
   const homeError = motor?.home_error_rad != null ? motor.home_error_rad * (180 / Math.PI) : null
   const atHome = motor?.at_home ?? false
 
+  const displayDeg = dragging && dragDeg != null ? dragDeg : currentDeg
+
   const limitProximity = (() => {
-    if (currentDeg == null) return 'normal'
+    if (displayDeg == null) return 'normal'
     const marginDeg = 10
-    if (currentDeg <= minDeg || currentDeg >= maxDeg) return 'at_limit'
-    if (currentDeg - minDeg < marginDeg || maxDeg - currentDeg < marginDeg) return 'near_limit'
+    if (displayDeg <= minDeg || displayDeg >= maxDeg) return 'at_limit'
+    if (displayDeg - minDeg < marginDeg || maxDeg - displayDeg < marginDeg) return 'near_limit'
     return 'normal'
   })()
 
@@ -275,7 +282,38 @@ function JointSlider({
       ? '[&_[data-slider-range]]:bg-red-500'
       : limitProximity === 'near_limit'
         ? '[&_[data-slider-range]]:bg-amber-500'
-        : ''
+        : dragging
+          ? '[&_[data-slider-range]]:bg-blue-500'
+          : ''
+
+  const handleSliderChange = (val: number | readonly number[]) => {
+    const deg = Array.isArray(val) ? val[0] : val
+    setDragging(true)
+    setDragDeg(deg)
+  }
+
+  const handleSliderCommit = async (val: number | readonly number[]) => {
+    const deg = Array.isArray(val) ? val[0] : val
+    setDragging(false)
+    setDragDeg(null)
+    if (!canMove) return
+    const rad = (deg * Math.PI) / 180
+    try {
+      const res = await moveMut.mutateAsync({
+        id: joint.can_id!,
+        position_rad: rad,
+        kp: 5.0,
+        kd: 0.5,
+      })
+      if (!res.success) {
+        toast.error(`Move failed for ${formatJointName(joint.name)}`, { description: res.error })
+      }
+    } catch (e) {
+      toast.error(`Move failed for ${formatJointName(joint.name)}`, {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
 
   const handleExpand = () => {
     if (!expanded) {
@@ -390,9 +428,11 @@ function JointSlider({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {currentDeg != null && (
+          {dragging && dragDeg != null ? (
+            <span className="text-xs font-mono text-blue-400">{dragDeg.toFixed(1)}°</span>
+          ) : currentDeg != null ? (
             <span className="text-xs font-mono text-muted-foreground">{currentDeg.toFixed(1)}°</span>
-          )}
+          ) : null}
           {limitProximity === 'at_limit' && (
             <Badge variant="destructive" className="text-[10px] h-4">At limit</Badge>
           )}
@@ -412,11 +452,13 @@ function JointSlider({
       </div>
       <div className={`relative ${sliderTrackClass}`}>
         <Slider
-          value={currentDeg != null ? [currentDeg] : [0]}
+          value={displayDeg != null ? [displayDeg] : [0]}
           min={minDeg}
           max={maxDeg}
           step={0.5}
-          disabled
+          disabled={!canMove}
+          onValueChange={handleSliderChange}
+          onValueCommitted={handleSliderCommit}
         />
         <div className="mt-0.5 flex justify-between text-[10px] text-muted-foreground font-mono">
           <span>{minDeg.toFixed(0)}°</span>
