@@ -38,8 +38,8 @@ cortex/                Motor control, arm coordination, config ("brain stem")
   src/
     lib.rs             Crate root (pub mod config, motor, arm)
     config.rs          serde_yaml config loader for robot.yaml
-    motor.rs           High-level single-motor API (MIT-style control)
-    arm.rs             Multi-joint arm controller (shared transport)
+    motor.rs           High-level single-motor API (MIT-style control, joint limits, gravity-catch, faults)
+    arm.rs             Multi-joint arm controller (ordered joints, preflight, homing results, home status)
   src/bin/
     probe.rs           Hardware probe / connectivity smoke test
     motor_repl.rs      Interactive motor REPL for testing/tuning
@@ -50,8 +50,8 @@ navi/                  Web server + telemetry (axum, WebTransport); pairs with `
   src/
     main.rs            `navi` binary entry point (clap CLI)
     lib.rs             AppState, build_router, module re-exports
-    api.rs             REST API endpoints (/api/config, /api/motors, etc.)
-    telemetry.rs       Motor polling loop + WebTransport datagram streaming
+    api.rs             REST API endpoints (/api/config, /api/motors, preflight, homing, limits, etc.)
+    telemetry.rs       Motor polling loop + WebTransport datagram streaming (home/limit status)
 link/                  React frontend (Vite + TanStack Router + Tailwind)
 deploy/link.service    Pi systemd unit (Navi binary); copied by deploy workflow
 config/robot.yaml      CAN IDs, joint limits, physical parameters
@@ -107,6 +107,59 @@ RS03 MIT control limits (from RobStride03Command normalization):
 
 Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) when testing new configurations.
 
+## Homing & Joint Safety System
+
+### Three-Layer Joint Limit Enforcement
+Every motor command passes through three layers of protection:
+1. **Link UI** — sliders constrain visible range, amber/red visual warnings near/at limits
+2. **Navi API** — validates and rejects with a clear error message before passing to Motor
+3. **Cortex Motor** — hard clamp on every `send_control()`, `move_to()`, `step_toward()` call; no exceptions
+
+### Motor-Level Limits (`cortex/src/motor.rs`)
+- `Motor` struct stores `joint_limits: Option<(f32, f32)>` (min_rad, max_rad)
+- `send_control()` clamps `position_rad` to limits before building the CAN frame
+- **Soft boundary zone** for velocity/torque: configurable `soft_limit_margin_rad` (~0.175 rad / ~10°). When motor position is within this margin of a limit and velocity/torque pushes toward it, command is linearly scaled down to zero at the boundary.
+- `last_known_position` tracked from `read_position()`, `read_state()`, `enable()`, and `send_control()` feedback
+- `set_joint_limits(min, max)`, `clear_joint_limits()`, `joint_limits()` — getter/setter API
+- Limits are set by `Arm::new()` from config and also updatable at runtime via API
+
+### Gravity-Catch Enable (`cortex/src/motor.rs`)
+- `enable_with_hold(kp, kd)` — enables motor then immediately sends soft position-hold at current encoder position
+- Prevents gravity-loaded joints from dropping in the ~25ms gap between enable and first recovery command
+- Used by `startup_safe_recovery()` before homing each joint
+
+### Pre-Flight Check (`cortex/src/arm.rs`)
+- `preflight_check()` reads every joint's encoder position (without enabling) and compares to configured limits
+- Returns `PreflightResult { pass: bool, joints: Vec<PreflightJoint> }` with per-joint violation details
+- `PreflightViolation` includes: exceeded_by_rad/deg, which_limit ("min"/"max"), suggested_fix (human-readable direction)
+- `startup_safe_recovery(force)` calls preflight first; blocks if violations exist unless `force: true`
+
+### Deterministic Homing Order (`cortex/src/arm.rs`)
+- `Arm` uses `Vec<OrderedJoint>` instead of `HashMap` — joints iterate in YAML field order
+- Order: shoulder_pitch → shoulder_roll → upper_arm_yaw → elbow_pitch (proximal to distal)
+- Shoulder homes first (supports entire arm weight), elbow homes last (lightest load)
+
+### Per-Joint Homing Results (`cortex/src/arm.rs`)
+- `JointHomingStatus` enum: `AlreadyHome`, `Homed`, `StalledButHomed`, `TimedOut`, `Error(String)`, `Skipped`
+- `JointHomingResult`: joint_name, status, start/end positions, home target, error_rad, stall_backoffs, duration_ms
+- `StartupRecoverySummary` includes `Vec<JointHomingResult>` + aggregate `stall_backoffs`
+
+### Homing Status Query (`cortex/src/arm.rs`)
+- `get_homing_status()` — read-only per-joint check returning `Vec<JointHomeStatus>` (home_rad, current_rad, error_rad, at_home, limits)
+
+### Fault Detection (`cortex/src/motor.rs`)
+- `read_fault_code()` — reads raw fault register at 0x3022 (bit14=stall, bit7=uncalibrated, bit3=overvoltage, bit2=undervoltage, bit1=driver, bit0=overtemp)
+- `clear_faults()` — sends StopCommand with `clear_fault: true`
+
+### Runtime Limit/Home Editing (API)
+- `PUT /api/joints/{section}/{joint}/limits` — update limits in config + persist to `robot.yaml` + update Motor instance
+- `PUT /api/joints/{section}/{joint}/home` — set home_rad explicitly or `{ set_current: true }` to use current position
+
+### Important Homing Notes
+- `startup_safe_recovery(force: bool)` — the `force` parameter is **required**; pass `false` for normal use
+- `Arm::get_joint_positions()` returns `Vec<(String, f32)>` (ordered), not `HashMap`
+- `Arm::update_joint_limits()` and `Arm::update_joint_home()` update both internal params and Motor instances
+
 ## Key Facts
 - The repo is a **Cargo workspace** — `cortex` (motor/arm/config) and `navi` (web/telemetry). Use `cortex::` for motor imports, not `robot::`.
 - RS03 default CAN ID is **127** (not 1)
@@ -122,6 +175,9 @@ Development defaults: kp=30, kd=1 for position hold. Start soft (kp=5, kd=0.5) w
 - CAN2USB debugger DIP switch must be in position **2** (position 1 causes hangs)
 - `config/robot.yaml` has `bus.transport` field (`"ch341"` or `"socketcan"`) and `bus.socketcan_interface` (e.g. `"can0"`)
 - The `navi` binary accepts `--config <path>` to override the default `config/robot.yaml` path
+- **Joint limits are enforced at three layers** — Motor (hard clamp), API (reject), UI (visual). Every code path respects limits.
+- **Homing order is deterministic** — YAML field order (shoulder first, elbow last) with gravity-catch hold
+- **Pre-flight check blocks homing** if any joint starts outside its limits (unless force override)
 
 ## Link Frontend (React)
 The `link/` directory is a React app — the primary interaction layer between the user and the robot (not just a "dashboard").
@@ -129,20 +185,24 @@ The `link/` directory is a React app — the primary interaction layer between t
 **Stack:** Vite, React 19, TypeScript, TanStack Router (file-based), Zustand (state), Recharts (charts), Tailwind CSS 4.
 
 **Key files:**
-- `link/src/routes/index.tsx` — home page, motor card grid
+- `link/src/routes/index.tsx` — Overview page: motor card grid, **HomingStatusCard**, preflight alerts
 - `link/src/routes/motor.$id.tsx` — per-motor detail/control page
 - `link/src/routes/test.tsx` — test panel: motor jog/spin/torque controls, sequence runner, global E-STOP
+- `link/src/routes/arms.tsx` — arm control: per-joint sliders with **limit proximity indicators**, collapsible **limit/home editor**, **homing result display**, preflight alerts
 - `link/src/components/MotorCard.tsx` — motor status card
 - `link/src/components/MotorControl.tsx` — enable/disable/move/control panel
 - `link/src/components/TelemetryChart.tsx` — real-time time-series plot
-- `link/src/stores/telemetry.ts` — Zustand store for WebTransport telemetry
+- `link/src/components/HomingStatusCard.tsx` — per-arm homing status card with colored dot indicators, inline home buttons, last homing result display
+- `link/src/components/PreflightAlert.tsx` — red alert banner for joint limit violations with per-joint details, suggested fixes, re-check and override buttons
+- `link/src/stores/telemetry.ts` — Zustand store for WebTransport telemetry (includes `home_rad`, `home_error_rad`, `at_home`, `limits` per motor)
 - `link/src/hooks/useWebTransport.ts` — WebTransport connection hook
-- `link/src/lib/api.ts` — REST API client functions (motor CRUD + spin/torque/jog/stop/estop + sequences)
+- `link/src/lib/api.ts` — REST API client functions (motor CRUD + spin/torque/jog/stop/estop + sequences + homing + preflight + limit/home editing)
 
 **Dev workflow:** `cargo run -p navi --bin navi -- --no-hardware` starts the server with mock telemetry on http://localhost:8080. Run `cd link && npm run dev` for Vite HMR on port 5173 (proxied to 8080). For production, `cd link && npm run build` then the `navi` binary serves the built frontend from `link/dist/`.
 
 **Status:** Functional with Overview, System, Arms, Test, Settings, and Logs pages. Test Panel has motor selector, live telemetry readout, 5 control tabs (Jog/Spin/Torque/Position/Raw MIT), sequence runner, and global E-STOP. UI polish is ongoing.
-Overview now includes a live Pi telemetry card (CPU usage, memory usage, and temperature when available) from the backend telemetry stream.
+Overview includes live Pi telemetry card, **HomingStatusCard** (per-arm homing status with colored indicators and home buttons), and **PreflightAlert** banners for limit violations.
+Arms page includes per-joint sliders with **limit proximity indicators** (amber near, red at limit), collapsible **joint config editor** (edit limits and home position, "Set Current as Home" button), and **homing result feedback** after home commands.
 
 ## Deployment
 - **Windows dev:** COM5 for CAN2USB, `--no-hardware` for frontend-only development.
@@ -154,7 +214,7 @@ Overview now includes a live Pi telemetry card (CPU usage, memory usage, and tem
   - **Repo path on Pi:** `/home/joey/mr_robot` (cloned from GitHub). Pi's `config/robot.yaml` has `transport: socketcan` (local edit, not committed).
   - **Build on Pi:** `cd ~/mr_robot && cargo build --release --features socketcan`
   - **To update on Pi:** `cd ~/mr_robot && git pull && cargo build --release --features socketcan && sudo systemctl restart link.service`
-  - **HTTPS (Tailscale):** In the [Tailscale admin DNS](https://login.tailscale.com/admin/dns), enable MagicDNS and **HTTPS Certificates**. On the Pi, run `deploy/renew-tailscale-cert.sh` to write Let’s Encrypt certs to `certs/robot.pem` / `certs/robot-key.pem` (navi loads them; default paths). Open Link at `https://<machine>.<tailnet>.ts.net:8080` from another tailnet device. Re-run the script periodically (~90 day cert lifetime). Details: `deploy/tailscale-https.md`. WebTransport continues to use the built-in identity plus `/api/cert-hash` pinning.
+  - **HTTPS (Tailscale):** In the [Tailscale admin DNS](https://login.tailscale.com/admin/dns), enable MagicDNS and **HTTPS Certificates**. On the Pi, run `deploy/renew-tailscale-cert.sh` to write Let's Encrypt certs to `certs/robot.pem` / `certs/robot-key.pem` (navi loads them; default paths). Open Link at `https://<machine>.<tailnet>.ts.net:8080` from another tailnet device. Re-run the script periodically (~90 day cert lifetime). Details: `deploy/tailscale-https.md`. WebTransport continues to use the built-in identity plus `/api/cert-hash` pinning.
  - **CI/CD:** GitHub Actions workflow `Deploy Robot On Main` runs on pushes to `main`: CI checks on GitHub-hosted runner, then deploy/build/restart on Pi using self-hosted runner `robot-local` (labels: `self-hosted`, `Linux`, `ARM64`, `robot`). Deployment sync excludes `config/robot.yaml` to preserve machine-local transport settings.
 
 ### Waveshare 2-CH CAN HAT — Pin Mapping (IMPORTANT)
@@ -175,6 +235,8 @@ Key `bus:` fields:
 
 The `navi` binary accepts `--config <path>` (default `config/robot.yaml`) so the Pi can use a local config with `transport: socketcan` without modifying the repo's config.
 
+Joint limits and home positions can be updated at runtime via the Link UI (Arms page → joint config editor) or API (`PUT /api/joints/{section}/{joint}/limits` and `/home`). Changes persist to `robot.yaml`.
+
 ## Rust Environment
 - Rust stable toolchain (MSVC target on Windows, aarch64-unknown-linux-gnu on Pi)
 - Build: `cargo build`, `cargo run -p cortex --bin probe`, `cargo run -p navi --bin navi`, etc.
@@ -190,11 +252,11 @@ All under `/api` prefix (served by navi):
 - `POST /api/motors/{id}/enable` — enable motor
 - `POST /api/motors/{id}/disable` — disable motor
 - `POST /api/motors/{id}/zero` — set encoder zero
-- `POST /api/motors/{id}/move` — position move `{ position_rad, kp?, kd? }`
-- `POST /api/motors/{id}/control` — raw MIT control `{ position, velocity, kp, kd, torque }`
+- `POST /api/motors/{id}/move` — position move `{ position_rad, kp?, kd? }` (API validates limits)
+- `POST /api/motors/{id}/control` — raw MIT control `{ position, velocity, kp, kd, torque }` (API validates limits)
 - `POST /api/motors/{id}/spin` — velocity control `{ velocity_rads, kd? }`
 - `POST /api/motors/{id}/torque` — torque control `{ torque_nm }`
-- `POST /api/motors/{id}/jog` — relative position move `{ delta_deg, kp?, kd? }`
+- `POST /api/motors/{id}/jog` — relative position move `{ delta_deg, kp?, kd? }` (validates target vs limits)
 - `POST /api/motors/{id}/stop` — emergency stop (disable) single motor
 - `POST /api/estop` — emergency stop ALL motors
 
@@ -202,8 +264,14 @@ All under `/api` prefix (served by navi):
 - `GET /api/arms` — list arms with joint info
 - `POST /api/arms/{side}/enable` — enable all joints
 - `POST /api/arms/{side}/disable` — disable all joints
-- `POST /api/arms/{side}/home` — startup safe recovery
+- `POST /api/arms/{side}/home` — startup safe recovery with pre-flight; accepts `{ override_preflight?: bool }`; returns `HomeResponse` with per-joint results and optional preflight data
 - `POST /api/arms/{side}/pose` — set joint positions `{ joints: {name: rad}, kp?, kd? }`
+- `GET /api/arms/{side}/preflight` — read-only pre-flight limit check (no motor movement)
+- `GET /api/arms/{side}/home-status` — read-only per-joint distance-from-home
+
+**Joint configuration:**
+- `PUT /api/joints/{section}/{joint}/limits` — update joint limits `{ min_rad, max_rad }`, persists to `robot.yaml`
+- `PUT /api/joints/{section}/{joint}/home` — update home position `{ home_rad }` or `{ set_current: true }`, persists to `robot.yaml`
 
 **Sequences:**
 - `GET /api/sequences` — list available sequences
@@ -218,7 +286,12 @@ All under `/api` prefix (served by navi):
 ## Telemetry Snapshot Schema
 Realtime snapshots (WebTransport datagrams and `GET /api/telemetry` fallback) include:
 - `timestamp_ms`
-- `motors: MotorSnapshot[]`
+- `motors: MotorSnapshot[]` — each motor includes:
+  - `can_id`, `joint_name`, `angle_rad`, `velocity_rads`, `torque_nm`, `temperature_c`, `mode`, `faults`, `online`
+  - `home_rad` (configured home position)
+  - `home_error_rad` (|current − home|)
+  - `at_home` (within settle tolerance)
+  - `limits` (configured [min_rad, max_rad])
 - `system`:
   - `cpu_usage_percent`
   - `memory_used_mb`

@@ -31,28 +31,40 @@ alwaysApply: true
 - **Runtime:** tokio (async, required by robstride Transport trait)
 - **Config:** `serde` + `serde_yaml` for `config/robot.yaml`
 - **`cortex/`** — motor control, arm coordination, config (the "brain stem")
-  - `cortex/src/motor.rs` — high-level single-motor API (MIT-style control)
-  - `cortex/src/arm.rs` — multi-joint arm coordination
+  - `cortex/src/motor.rs` — high-level single-motor API (MIT-style control), joint limit enforcement, gravity-catch enable, fault code reading
+  - `cortex/src/arm.rs` — multi-joint arm coordination, deterministic homing order, preflight checks, per-joint homing results
   - `cortex/src/config.rs` — typed config deserialization
   - `cortex/src/bin/probe.rs` — hardware probe / connectivity smoke test
   - `cortex/src/bin/motor_repl.rs` — interactive motor REPL for testing/tuning
   - `cortex/src/bin/wave_demo.rs` — arm wave demo (Phase 1 milestone)
 - **`navi/`** — web server and telemetry (axum + WebTransport); pairs with `link/` frontend
   - `navi/src/main.rs` — `navi` binary entry point (`--config`, `--no-hardware`, `--port`, `--wt-port`)
-  - `navi/src/api.rs` — REST API endpoints (motor CRUD, spin/torque/jog/stop/estop, arms, sequences)
-  - `navi/src/telemetry.rs` — motor polling + WebTransport datagram streaming
+  - `navi/src/api.rs` — REST API endpoints (motor CRUD, spin/torque/jog/stop/estop, arms, sequences, preflight, homing status, joint limit/home editing)
+  - `navi/src/telemetry.rs` — motor polling + WebTransport datagram streaming (includes home/limit status per motor)
 - **`link/`** — React frontend (Vite + TanStack Router + Tailwind)
   - Test Panel (`link/src/routes/test.tsx`) — motor jog/spin/torque/position/raw controls, sequence runner, global E-STOP
+  - Arms page (`link/src/routes/arms.tsx`) — per-joint control, homing feedback, inline limit/home editor, preflight alerts
+  - Overview (`link/src/routes/index.tsx`) — motor grid, homing status card, preflight violation banners
 - Config lives in `config/robot.yaml` (transport: ch341 or socketcan)
+
+## Homing & Joint Safety System
+- **Three-layer limit enforcement:** UI slider constraints → API-level validation/rejection → Motor-level hard clamp on every command
+- **Motor-level limits:** `Motor` struct stores `joint_limits: Option<(f32, f32)>`; `send_control()` clamps position; velocity/torque commands have soft boundary zone (linear ramp-down within ~10° of limits)
+- **Gravity-catch:** `enable_with_hold(kp, kd)` enables motor and immediately holds current position to prevent gravity drop
+- **Deterministic homing order:** `Arm` uses ordered `Vec` (YAML field order: shoulder_pitch first → elbow_pitch last); proximal-to-distal for safety
+- **Pre-flight check:** `preflight_check()` reads all joint positions before enabling, blocks homing if any joint is outside limits (unless force override)
+- **Per-joint homing results:** `StartupRecoverySummary` includes `Vec<JointHomingResult>` with status (AlreadyHome/Homed/StalledButHomed/TimedOut/Error/Skipped), timing, error magnitude
+- **Runtime limit/home editing:** API endpoints persist changes to `robot.yaml` and update Motor instances live
+- **Fault reading:** `read_fault_code()` reads raw 0x3022 register; `clear_faults()` sends StopCommand with clear_fault flag
 
 ## Link Frontend
 - React 19, Vite, TypeScript, TanStack Router, Zustand, Recharts, Tailwind CSS 4
 - "Link" is the primary interaction layer with the robot, not just a dashboard
 - Pages: Overview, System, Arms, **Test** (motor controls + sequences), Settings, Logs
-- Overview page includes live Pi telemetry card (CPU usage, memory usage, and temperature when sensor is available)
+- Overview page includes: live Pi telemetry card, **HomingStatusCard** (per-arm homing status with colored indicators), **PreflightAlert** banners
+- Arms page includes: per-joint control sliders with **limit proximity indicators** (amber near limit, red at limit), collapsible **joint config editor** (limits + home position + "Set Current as Home"), per-joint **homing result display**, preflight violation banners
 - Dev: `cargo run -p navi --bin navi -- --no-hardware` for mock telemetry, `cd link && npm run dev` for HMR
 - Production: `cd link && npm run build`, then `navi` binary serves from `link/dist/`
-- Status: functional with test panel for remote motor control via browser
 
 ## Deployment
 - **Windows dev:** COM5 for CAN2USB, `--no-hardware` for frontend-only dev
@@ -70,9 +82,13 @@ alwaysApply: true
 - **MIT-style control only** — RS03 firmware rejects RunMode parameter writes; use ControlCommand frames (comm_type 1) with kp/kd/position/velocity/torque packed in a single frame
 - CAN2USB debugger DIP switch must be in position **2**
 - REST for commands, WebTransport datagrams for real-time telemetry (no WebSockets)
-- Telemetry snapshots now include host system metrics (`cpu_usage_percent`, `memory_used_mb`, `memory_total_mb`, optional `temperature_c`) sourced via `sysinfo`
+- Telemetry snapshots now include host system metrics (`cpu_usage_percent`, `memory_used_mb`, `memory_total_mb`, optional `temperature_c`) sourced via `sysinfo`, plus per-motor `home_rad`, `home_error_rad`, `at_home`, and `limits`
 - Frontend served from the robot itself (not cloud-hosted)
 - Repo is a Cargo workspace — use `cortex::` for imports, not `robot::`
 - Transport selection via `config/robot.yaml` `bus.transport` field: `"ch341"` (Windows) or `"socketcan"` (Pi)
 - `navi` binary accepts `--config <path>` for deployment-specific config
 - Waveshare CAN HAT interrupt pins: CAN_0=GPIO23, CAN_1=GPIO25 (verified from wiki, NOT GPIO25/24 as some docs say)
+- **Joint limits are enforced at three layers** — Motor (hard clamp), API (informative reject), UI (visual constraints). Every code path (homing, API, REPL, wave demo) respects limits.
+- **Homing is deterministic** — joints home in YAML field order (shoulder first, elbow last) with gravity-catch hold on each enable
+- **Pre-flight check blocks homing** if any joint starts outside its limits (unless force override)
+- **`startup_safe_recovery(force: bool)`** — the `force` parameter is required; pass `false` for normal use, `true` only for override
