@@ -399,17 +399,49 @@ impl Arm {
                 let timeout = std::time::Duration::from_secs(5);
                 let t_start = Instant::now();
 
+                info!(
+                    joint = %name,
+                    kp_soft = hold_kp,
+                    kp_settle = kp_target,
+                    ramp_ticks = ramp_ticks,
+                    "near-home ramp: starting gain ramp"
+                );
+
+                let mut final_tick = 0u32;
                 for tick in 0..ramp_ticks + 40 {
+                    final_tick = tick;
                     let t = ((tick + 1) as f32 / ramp_ticks as f32).min(1.0);
                     let kp = hold_kp + (kp_target - hold_kp) * t;
                     let kd = hold_kd + (kd_target - hold_kd) * t;
-                    let _ = motor.send_control(home, 0.0, kp, kd, 0.0).await?;
+                    let state = motor.send_control(home, 0.0, kp, kd, 0.0).await?;
+
+                    if tick % 10 == 0 || tick == ramp_ticks {
+                        info!(
+                            joint = %name,
+                            tick,
+                            kp = format_args!("{:.1}", kp),
+                            pos_deg = format_args!("{:.2}", state.angle_rad.to_degrees()),
+                            torque_nm = format_args!("{:.2}", state.torque_nm),
+                            "near-home ramp progress"
+                        );
+                    }
 
                     let cur = motor.read_position().await?;
                     if (cur - home).abs() <= settle {
+                        info!(
+                            joint = %name,
+                            final_err_deg = format_args!("{:.2}", (cur - home).abs().to_degrees()),
+                            ticks = tick,
+                            "near-home ramp: settled"
+                        );
                         break;
                     }
                     if t_start.elapsed() >= timeout {
+                        info!(
+                            joint = %name,
+                            err_deg = format_args!("{:.2}", (cur - home).abs().to_degrees()),
+                            "near-home ramp: timeout"
+                        );
                         break;
                     }
                     tokio::time::sleep(step_period).await;
@@ -417,6 +449,14 @@ impl Arm {
 
                 let end_pos = motor.read_position().await.unwrap_or(pos);
                 let final_err = (end_pos - home).abs();
+                info!(
+                    joint = %name,
+                    final_err_deg = format_args!("{:.2}", final_err.to_degrees()),
+                    end_pos_rad = format_args!("{:.4}", end_pos),
+                    ticks = final_tick,
+                    elapsed_ms = t_start.elapsed().as_millis() as u64,
+                    "near-home ramp complete"
+                );
                 let status = if final_err <= settle {
                     JointHomingStatus::Homed
                 } else {

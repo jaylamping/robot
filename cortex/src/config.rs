@@ -138,7 +138,7 @@ fn default_recovery_direct_command_within_rad() -> f64 {
 }
 
 fn default_kp_settle() -> f32 {
-    30.0
+    100.0
 }
 
 fn default_kd_settle() -> f32 {
