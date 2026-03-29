@@ -348,11 +348,12 @@ impl Arm {
                 home = new_home;
             }
 
+            let settle = r.settle_tolerance_rad as f32;
             let large = r.large_error_rad as f32;
             let pos = motor.read_position().await?;
             let err_mag = (pos - home).abs();
 
-            if err_mag <= large {
+            if err_mag <= settle {
                 joint_results.push(JointHomingResult {
                     joint_name: name.clone(),
                     status: JointHomingStatus::AlreadyHome,
@@ -366,6 +367,75 @@ impl Arm {
                 continue;
             }
 
+            let hold_kp = r.kp_soft;
+            let hold_kd = r.kd_soft;
+
+            if err_mag <= large {
+                info!(
+                    joint = %name,
+                    error_rad = err_mag,
+                    home_rad = home,
+                    "joint near home but not settled; enabling and moving directly"
+                );
+
+                if let Err(e) = motor.enable_with_hold(hold_kp, hold_kd).await {
+                    joint_results.push(JointHomingResult {
+                        joint_name: name.clone(),
+                        status: JointHomingStatus::Error(format!("enable failed: {:#}", e)),
+                        start_position_rad: start_pos,
+                        end_position_rad: pos,
+                        home_target_rad: home,
+                        error_rad: err_mag,
+                        stall_backoffs: 0,
+                        duration_ms: joint_start.elapsed().as_millis() as u64,
+                    });
+                    continue;
+                }
+
+                let kp_target = r.kp_settle;
+                let kd_target = r.kd_settle;
+                let ramp_ticks = r.settle_ramp_ticks.max(1);
+                let step_period = std::time::Duration::from_millis(r.step_period_ms);
+                let timeout = std::time::Duration::from_secs(5);
+                let t_start = Instant::now();
+
+                for tick in 0..ramp_ticks + 40 {
+                    let t = ((tick + 1) as f32 / ramp_ticks as f32).min(1.0);
+                    let kp = hold_kp + (kp_target - hold_kp) * t;
+                    let kd = hold_kd + (kd_target - hold_kd) * t;
+                    let _ = motor.send_control(home, 0.0, kp, kd, 0.0).await?;
+
+                    let cur = motor.read_position().await?;
+                    if (cur - home).abs() <= settle {
+                        break;
+                    }
+                    if t_start.elapsed() >= timeout {
+                        break;
+                    }
+                    tokio::time::sleep(step_period).await;
+                }
+
+                let end_pos = motor.read_position().await.unwrap_or(pos);
+                let final_err = (end_pos - home).abs();
+                let status = if final_err <= settle {
+                    JointHomingStatus::Homed
+                } else {
+                    JointHomingStatus::StalledButHomed
+                };
+
+                joint_results.push(JointHomingResult {
+                    joint_name: name.clone(),
+                    status,
+                    start_position_rad: start_pos,
+                    end_position_rad: end_pos,
+                    home_target_rad: home,
+                    error_rad: final_err,
+                    stall_backoffs: 0,
+                    duration_ms: joint_start.elapsed().as_millis() as u64,
+                });
+                continue;
+            }
+
             info!(
                 joint = %name,
                 error_rad = err_mag,
@@ -373,8 +443,6 @@ impl Arm {
                 "joint far from home; enabling with gravity-catch and running recovery"
             );
 
-            let hold_kp = r.kp_soft;
-            let hold_kd = r.kd_soft;
             if let Err(e) = motor.enable_with_hold(hold_kp, hold_kd).await {
                 joint_results.push(JointHomingResult {
                     joint_name: name.clone(),
