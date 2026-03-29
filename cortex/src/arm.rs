@@ -61,6 +61,9 @@ pub struct PreflightViolation {
     pub exceeded_by_deg: f32,
     pub which_limit: String,
     pub suggested_fix: String,
+    /// True when the position is far beyond ±2π, indicating multi-turn encoder
+    /// accumulation rather than a genuine out-of-range joint.
+    pub multiturn: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,29 +209,51 @@ impl Arm {
             let pos_deg = pos.to_degrees();
             let mut violation = None;
 
+            let is_multiturn = pos.abs() > std::f32::consts::TAU;
+
             if pos < params.limit_min_rad {
                 let exceeded = params.limit_min_rad - pos;
                 pass = false;
+                let suggested_fix = if is_multiturn {
+                    format!(
+                        "Encoder has multi-turn accumulation ({:.1} turns). \
+                         Use \"Zero Encoder\" to reset, then re-check.",
+                        pos / std::f32::consts::TAU
+                    )
+                } else {
+                    format!(
+                        "Manually rotate {} ~{:.0}° toward the positive direction",
+                        oj.name, exceeded.to_degrees()
+                    )
+                };
                 violation = Some(PreflightViolation {
                     exceeded_by_rad: exceeded,
                     exceeded_by_deg: exceeded.to_degrees(),
                     which_limit: "min".to_string(),
-                    suggested_fix: format!(
-                        "Manually rotate {} ~{:.0}° toward the positive direction",
-                        oj.name, exceeded.to_degrees()
-                    ),
+                    suggested_fix,
+                    multiturn: is_multiturn,
                 });
             } else if pos > params.limit_max_rad {
                 let exceeded = pos - params.limit_max_rad;
                 pass = false;
+                let suggested_fix = if is_multiturn {
+                    format!(
+                        "Encoder has multi-turn accumulation ({:.1} turns). \
+                         Use \"Zero Encoder\" to reset, then re-check.",
+                        pos / std::f32::consts::TAU
+                    )
+                } else {
+                    format!(
+                        "Manually rotate {} ~{:.0}° toward the negative direction",
+                        oj.name, exceeded.to_degrees()
+                    )
+                };
                 violation = Some(PreflightViolation {
                     exceeded_by_rad: exceeded,
                     exceeded_by_deg: exceeded.to_degrees(),
                     which_limit: "max".to_string(),
-                    suggested_fix: format!(
-                        "Manually rotate {} ~{:.0}° toward the negative direction",
-                        oj.name, exceeded.to_degrees()
-                    ),
+                    suggested_fix,
+                    multiturn: is_multiturn,
                 });
             }
 

@@ -109,6 +109,7 @@ export interface PreflightViolation {
   exceeded_by_deg: number
   which_limit: string
   suggested_fix: string
+  multiturn: boolean
 }
 
 export interface PreflightJoint {

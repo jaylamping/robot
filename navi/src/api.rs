@@ -1097,8 +1097,8 @@ async fn update_joint_limits(
     Path((section, joint)): Path<(String, String)>,
     Json(req): Json<UpdateLimitsRequest>,
 ) -> impl IntoResponse {
-    use std::f64::consts::PI;
-    let max_range = 4.0 * PI;
+    use std::f64::consts::TAU;
+    let max_range = TAU; // ±2π (±360°) — no humanoid joint needs more than a full revolution
 
     if req.min_rad >= req.max_rad {
         return Json(CommandResponse {
@@ -1112,7 +1112,7 @@ async fn update_joint_limits(
     if req.min_rad < -max_range || req.max_rad > max_range {
         return Json(CommandResponse {
             success: false,
-            error: Some(format!("limits must be within ±{:.2} rad (±4π)", max_range)),
+            error: Some(format!("limits must be within ±{:.1}° (±2π rad)", max_range.to_degrees())),
             angle_rad: None,
             velocity_rads: None,
             torque_nm: None,
