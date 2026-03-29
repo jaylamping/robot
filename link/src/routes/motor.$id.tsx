@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
 import { useTelemetryStore } from '@/stores/telemetry'
-import { getMotor, type MotorDetail } from '@/lib/api'
+import { useRobotMotor } from '@/lib/queries'
 import { TelemetryChart } from '@/components/TelemetryChart'
 import { MotorControl } from '@/components/MotorControl'
 import { Card, CardContent } from '@/components/ui/card'
@@ -19,10 +18,8 @@ function MotorDetailPage() {
   const motor = useTelemetryStore((s) => s.motors[canId])
   const history = useTelemetryStore((s) => s.history[canId] ?? [])
 
-  const [detail, setDetail] = useState<MotorDetail | null>(null)
-  useEffect(() => {
-    getMotor(canId).then(setDetail).catch(() => {})
-  }, [canId])
+  const detailQ = useRobotMotor(canId)
+  const detail = detailQ.data
 
   const limitsRad: [number, number] | undefined = detail
     ? [detail.limits[0], detail.limits[1]]

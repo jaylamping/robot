@@ -1,20 +1,16 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
+import type { ArmInfo, CommandResponse, HomeResponse } from '@/lib/api'
+import { useRobotArmPreflight, useRobotArms } from '@/lib/queries'
 import {
-  getArms,
-  enableArm,
-  disableArm,
-  homeArm,
-  setArmPose,
-  getArmPreflight,
-  updateJointLimits,
-  updateJointHome,
-  type ArmInfo,
-  type CommandResponse,
-  type HomeResponse,
-  type PreflightResult,
-} from '@/lib/api'
+  useEnableArmMutation,
+  useDisableArmMutation,
+  useHomeArmMutation,
+  useSetArmPoseMutation,
+  useUpdateJointLimitsMutation,
+  useUpdateJointHomeMutation,
+} from '@/lib/mutations/robot'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { PoseEditor } from '@/components/PoseEditor'
 import { PreflightAlert } from '@/components/PreflightAlert'
@@ -40,17 +36,9 @@ export const Route = createFileRoute('/arms')({
 })
 
 function ArmsPage() {
-  const [arms, setArms] = useState<ArmInfo[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const armsQ = useRobotArms()
 
-  const refreshArms = () => getArms().then(setArms).catch((e) => setError(e.message))
-
-  useEffect(() => {
-    refreshArms().finally(() => setLoading(false))
-  }, [])
-
-  if (loading) {
+  if (armsQ.isPending) {
     return (
       <div className="flex items-center justify-center h-64">
         <p className="text-muted-foreground text-sm">Loading arm configuration...</p>
@@ -58,14 +46,15 @@ function ArmsPage() {
     )
   }
 
-  if (error) {
+  if (armsQ.isError) {
     return (
       <div className="flex items-center justify-center h-64">
-        <p className="text-destructive text-sm">{error}</p>
+        <p className="text-destructive text-sm">{armsQ.error.message}</p>
       </div>
     )
   }
 
+  const arms = armsQ.data ?? []
   if (arms.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -82,29 +71,30 @@ function ArmsPage() {
       <h2 className="text-xl font-semibold mb-6">Arm Control</h2>
       <div className="space-y-6">
         {arms.map((arm) => (
-          <ArmPanel key={arm.side} arm={arm} onRefresh={refreshArms} />
+          <ArmPanel key={arm.side} arm={arm} />
         ))}
       </div>
     </div>
   )
 }
 
-function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
+function ArmPanel({ arm }: { arm: ArmInfo }) {
   const [busy, setBusy] = useState(false)
-  const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [hidePreflightBanner, setHidePreflightBanner] = useState(false)
   const [homeResult, setHomeResult] = useState<HomeResponse | null>(null)
   const motors = useTelemetryStore((s) => s.motors)
+
+  const preflightQ = useRobotArmPreflight(arm.side)
+  const preflight = preflightQ.data
+  const enableArmMut = useEnableArmMutation()
+  const disableArmMut = useDisableArmMutation()
+  const homeMut = useHomeArmMutation()
+  const setPoseMut = useSetArmPoseMutation()
 
   const onlineJoints = arm.joints.filter((j) => j.can_id != null && motors[j.can_id]?.online)
   const totalJoints = arm.joints.filter((j) => j.can_id != null).length
 
   const section = arm.side === 'left' ? 'arm_left' : 'arm_right'
-
-  useEffect(() => {
-    getArmPreflight(arm.side)
-      .then(setPreflight)
-      .catch(() => {})
-  }, [arm.side])
 
   async function exec(label: string, fn: () => Promise<CommandResponse>) {
     setBusy(true)
@@ -129,8 +119,9 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
   async function handleHome() {
     setBusy(true)
     try {
-      const result = await homeArm(arm.side)
+      const result = await homeMut.mutateAsync({ side: arm.side, override: false })
       setHomeResult(result)
+      setHidePreflightBanner(false)
       if (result.success) {
         const jointSummary = result.joints
           .map((j) => `${formatJointName(j.joint_name)}: ${j.status.replace(/_/g, ' ')}`)
@@ -142,7 +133,6 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
           duration: 8000,
         })
       } else if (result.preflight) {
-        setPreflight(result.preflight)
         toast.error(`${arm.side} arm: Pre-flight check failed`, { description: result.error })
       } else {
         toast.error(`${arm.side} arm: Homing failed`, { description: result.error })
@@ -172,7 +162,7 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
               icon={<LuPower className="size-4" />}
               description={`Enable all ${totalJoints} joints on the ${arm.side} arm. Motors will energize.`}
               disabled={busy}
-              onConfirm={() => exec('Enable All', () => enableArm(arm.side))}
+              onConfirm={() => exec('Enable All', () => enableArmMut.mutateAsync(arm.side))}
             />
             <ConfirmAction
               label="Disable All"
@@ -180,7 +170,7 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
               description={`Disable all joints on the ${arm.side} arm. Motors will de-energize and may drop.`}
               variant="destructive"
               disabled={busy}
-              onConfirm={() => exec('Disable All', () => disableArm(arm.side))}
+              onConfirm={() => exec('Disable All', () => disableArmMut.mutateAsync(arm.side))}
             />
             <Button
               variant="outline"
@@ -196,16 +186,11 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {preflight && !preflight.pass && (
+        {preflight && !preflight.pass && !hidePreflightBanner && (
           <PreflightAlert
             side={arm.side}
             preflight={preflight}
-            onRefresh={() =>
-              getArmPreflight(arm.side)
-                .then(setPreflight)
-                .catch(() => {})
-            }
-            onDismiss={() => setPreflight(null)}
+            onDismiss={() => setHidePreflightBanner(true)}
           />
         )}
 
@@ -233,7 +218,7 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
         )}
 
         {arm.joints.map((joint) => (
-          <JointSlider key={joint.name} joint={joint} section={section} onRefresh={onRefresh} />
+          <JointSlider key={joint.name} joint={joint} section={section} />
         ))}
 
         <Separator />
@@ -242,7 +227,9 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
           armSide={arm.side}
           joints={arm.joints}
           onApply={(pose) =>
-            exec('Set Pose', () => setArmPose(arm.side, { joints: pose }))
+            exec('Set Pose', () =>
+              setPoseMut.mutateAsync({ side: arm.side, pose: { joints: pose } }),
+            )
           }
         />
       </CardContent>
@@ -253,11 +240,9 @@ function ArmPanel({ arm, onRefresh }: { arm: ArmInfo; onRefresh: () => void }) {
 function JointSlider({
   joint,
   section,
-  onRefresh,
 }: {
   joint: ArmInfo['joints'][number]
   section: string
-  onRefresh: () => void
 }) {
   const motor = useTelemetryStore((s) => joint.can_id != null ? s.motors[joint.can_id] : undefined)
   const [expanded, setExpanded] = useState(false)
@@ -265,6 +250,8 @@ function JointSlider({
   const [editMax, setEditMax] = useState('')
   const [editHome, setEditHome] = useState('')
   const [saving, setSaving] = useState(false)
+  const limitsMut = useUpdateJointLimitsMutation()
+  const homeMut = useUpdateJointHomeMutation()
 
   const minDeg = (joint.limits[0] * 180) / Math.PI
   const maxDeg = (joint.limits[1] * 180) / Math.PI
@@ -308,10 +295,14 @@ function JointSlider({
     }
     setSaving(true)
     try {
-      const res = await updateJointLimits(section, joint.name, newMin, newMax)
+      const res = await limitsMut.mutateAsync({
+        section,
+        joint: joint.name,
+        minRad: newMin,
+        maxRad: newMax,
+      })
       if (res.success) {
         toast.success(`Limits saved for ${formatJointName(joint.name)}`)
-        onRefresh()
       } else {
         toast.error('Failed to save limits', { description: res.error })
       }
@@ -332,10 +323,13 @@ function JointSlider({
     }
     setSaving(true)
     try {
-      const res = await updateJointHome(section, joint.name, newHome)
+      const res = await homeMut.mutateAsync({
+        section,
+        joint: joint.name,
+        homeRad: newHome,
+      })
       if (res.success) {
         toast.success(`Home saved for ${formatJointName(joint.name)}`)
-        onRefresh()
       } else {
         toast.error('Failed to save home', { description: res.error })
       }
@@ -351,12 +345,15 @@ function JointSlider({
   const handleSetCurrentAsHome = async () => {
     setSaving(true)
     try {
-      const res = await updateJointHome(section, joint.name, undefined, true)
+      const res = await homeMut.mutateAsync({
+        section,
+        joint: joint.name,
+        setCurrent: true,
+      })
       if (res.success) {
         toast.success(`Home set to current position for ${formatJointName(joint.name)}`, {
           description: res.angle_rad != null ? `${(res.angle_rad * 180 / Math.PI).toFixed(1)}°` : undefined,
         })
-        onRefresh()
       } else {
         toast.error('Failed to set home', { description: res.error })
       }

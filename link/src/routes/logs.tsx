@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState, useRef } from 'react'
-import { getLogs, type LogEntry } from '@/lib/api'
+import type { LogEntry } from '@/lib/api'
+import { useRobotLogs } from '@/lib/queries'
 import { Card, CardContent, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -8,34 +9,22 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { LuRefreshCw } from 'react-icons/lu'
 
+const LOG_LIMIT = 500
+
 export const Route = createFileRoute('/logs')({
   component: LogsPage,
 })
 
 function LogsPage() {
-  const [entries, setEntries] = useState<LogEntry[]>([])
-  const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
-  const [loading, setLoading] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  function refresh() {
-    setLoading(true)
-    getLogs(500)
-      .then((logs) => { setEntries(logs); setError(null) })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
-  }
+  const logsQ = useRobotLogs(LOG_LIMIT, {
+    refetchInterval: autoRefresh ? 2000 : false,
+  })
 
-  useEffect(() => {
-    refresh()
-  }, [])
-
-  useEffect(() => {
-    if (!autoRefresh) return
-    const interval = setInterval(refresh, 2000)
-    return () => clearInterval(interval)
-  }, [autoRefresh])
+  const entries = logsQ.data ?? []
+  const error = logsQ.error?.message ?? null
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -57,8 +46,13 @@ function LogsPage() {
                 />
                 Auto-refresh
               </div>
-              <Button variant="ghost" size="icon-xs" onClick={refresh} disabled={loading}>
-                <LuRefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => void logsQ.refetch()}
+                disabled={logsQ.isFetching}
+              >
+                <LuRefreshCw className={`size-3 ${logsQ.isFetching ? 'animate-spin' : ''}`} />
               </Button>
             </div>
           </CardAction>
@@ -80,10 +74,6 @@ function LogsPage() {
               </div>
             </ScrollArea>
           )}
-
-          <p className="text-xs text-muted-foreground mt-2">
-            Showing {entries.length} entries (max 500, 2s poll)
-          </p>
         </CardContent>
       </Card>
     </div>
@@ -91,33 +81,32 @@ function LogsPage() {
 }
 
 function LogLine({ entry }: { entry: LogEntry }) {
-  const levelColor: Record<string, string> = {
-    ERROR: 'destructive',
-    WARN: 'secondary',
-    INFO: 'default',
-    DEBUG: 'outline',
-    TRACE: 'outline',
-  }
+  const levelColor =
+    entry.level === 'ERROR' || entry.level === 'error'
+      ? 'text-red-400'
+      : entry.level === 'WARN' || entry.level === 'warn'
+        ? 'text-amber-400'
+        : 'text-muted-foreground'
 
-  const variant = levelColor[entry.level] ?? 'outline'
-  const timestamp = formatTimestamp(entry.timestamp_ms)
+  const ts = new Date(entry.timestamp_ms)
+  const timeStr = ts.toLocaleTimeString(undefined, {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    fractionalSecondDigits: 3,
+  })
 
   return (
-    <div className="flex items-start gap-2 px-2 py-0.5 hover:bg-accent/30 rounded">
-      <span className="shrink-0 text-muted-foreground w-16">{timestamp}</span>
-      <Badge variant={variant as 'default'} className="shrink-0 text-[10px] w-12 justify-center">
+    <div className="flex gap-2 py-0.5 px-1 hover:bg-muted/50 rounded-sm">
+      <span className="text-muted-foreground shrink-0">{timeStr}</span>
+      <Badge variant="outline" className={`text-[10px] h-4 px-1 shrink-0 ${levelColor}`}>
         {entry.level}
       </Badge>
-      <span className="shrink-0 text-muted-foreground max-w-32 truncate">{entry.target}</span>
-      <span className="text-foreground break-all">{entry.message}</span>
+      <span className="text-muted-foreground shrink-0 truncate max-w-[140px]" title={entry.target}>
+        {entry.target}
+      </span>
+      <span className="break-all">{entry.message}</span>
     </div>
   )
-}
-
-function formatTimestamp(ms: number): string {
-  const totalSecs = Math.floor(ms / 1000)
-  const h = Math.floor(totalSecs / 3600)
-  const m = Math.floor((totalSecs % 3600) / 60)
-  const s = totalSecs % 60
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }

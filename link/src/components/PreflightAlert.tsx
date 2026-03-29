@@ -1,18 +1,22 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { getArmPreflight, homeArm, type PreflightResult } from '@/lib/api'
+import { useHomeArmMutation } from '@/lib/mutations/robot'
+import { linkKeys } from '@/lib/queries'
+import type { PreflightResult } from '@/lib/api'
 import { toast } from 'sonner'
 import { LuTriangleAlert, LuRotateCw, LuShieldAlert } from 'react-icons/lu'
 
 interface PreflightAlertProps {
   side: string
   preflight: PreflightResult
-  onRefresh: () => void
   onDismiss?: () => void
 }
 
-export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: PreflightAlertProps) {
+export function PreflightAlert({ side, preflight, onDismiss }: PreflightAlertProps) {
+  const qc = useQueryClient()
+  const homeMut = useHomeArmMutation()
   const [overriding, setOverriding] = useState(false)
   const [checking, setChecking] = useState(false)
 
@@ -23,12 +27,12 @@ export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: Prefli
   const handleRecheck = async () => {
     setChecking(true)
     try {
-      const result = await getArmPreflight(side)
-      if (result.pass) {
+      await qc.refetchQueries({ queryKey: linkKeys.armPreflight(side) })
+      const result = qc.getQueryData<PreflightResult>(linkKeys.armPreflight(side))
+      if (result?.pass) {
         toast.success('Pre-flight check passed')
         onDismiss?.()
       }
-      onRefresh()
     } catch (e) {
       toast.error('Pre-flight check failed', {
         description: e instanceof Error ? e.message : String(e),
@@ -44,7 +48,7 @@ export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: Prefli
     }
     setOverriding(true)
     try {
-      const result = await homeArm(side, true)
+      const result = await homeMut.mutateAsync({ side, override: true })
       if (result.success) {
         toast.success(`${side} arm homed with override`, {
           description: result.error ?? undefined,
@@ -53,7 +57,7 @@ export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: Prefli
       } else {
         toast.error(`${side} arm homing failed`, { description: result.error })
       }
-      onRefresh()
+      await qc.refetchQueries({ queryKey: linkKeys.armPreflight(side) })
     } catch (e) {
       toast.error('Override homing failed', {
         description: e instanceof Error ? e.message : String(e),
@@ -117,7 +121,7 @@ export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: Prefli
             <Button
               variant="outline"
               size="sm"
-              onClick={handleRecheck}
+              onClick={() => void handleRecheck()}
               disabled={checking}
               className="gap-1.5"
             >
@@ -127,7 +131,7 @@ export function PreflightAlert({ side, preflight, onRefresh, onDismiss }: Prefli
             <Button
               variant="destructive"
               size="sm"
-              onClick={handleOverride}
+              onClick={() => void handleOverride()}
               disabled={overriding}
               className="gap-1.5"
             >

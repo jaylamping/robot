@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState, type ReactNode } from 'react'
-import { getStatus, getConfig, type ServerStatus, type RobotConfig } from '@/lib/api'
+import { type ReactNode } from 'react'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -13,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useRobotConfig, useRobotServerStatus } from '@/lib/queries'
 import { LuServer, LuRadio, LuCpu, LuThermometer, LuMemoryStick } from 'react-icons/lu'
 
 export const Route = createFileRoute('/system')({
@@ -20,35 +20,23 @@ export const Route = createFileRoute('/system')({
 })
 
 function SystemPage() {
-  const [status, setStatus] = useState<ServerStatus | null>(null)
-  const [config, setConfig] = useState<RobotConfig | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const statusQ = useRobotServerStatus({ refetchInterval: 5000 })
+  const configQ = useRobotConfig()
   const connected = useTelemetryStore((s) => s.connected)
   const motors = useTelemetryStore((s) => s.motors)
   const systemTelemetry = useTelemetryStore((s) => s.system)
 
-  useEffect(() => {
-    Promise.all([getStatus(), getConfig()])
-      .then(([s, c]) => { setStatus(s); setConfig(c) })
-      .catch((e) => setError(e.message))
-  }, [])
-
-  const refreshStatus = () => {
-    getStatus().then(setStatus).catch(() => {})
-  }
-
-  useEffect(() => {
-    const interval = setInterval(refreshStatus, 5000)
-    return () => clearInterval(interval)
-  }, [])
-
+  const error = statusQ.error ?? configQ.error
   if (error) {
     return (
       <div className="flex items-center justify-center h-64">
-        <p className="text-destructive text-sm">{error}</p>
+        <p className="text-destructive text-sm">{error.message}</p>
       </div>
     )
   }
+
+  const status = statusQ.data
+  const config = configQ.data
 
   return (
     <div>

@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useTelemetryStore } from '@/stores/telemetry'
-import { homeArm, getArmPreflight, type HomeResponse, type PreflightResult } from '@/lib/api'
+import type { HomeResponse } from '@/lib/api'
 import { PreflightAlert } from '@/components/PreflightAlert'
+import { linkKeys, useRobotArmPreflights } from '@/lib/queries'
+import { useHomeArmMutation } from '@/lib/mutations/robot'
 import { toast } from 'sonner'
 import { LuHouse, LuCheck, LuCircleAlert, LuCircleMinus } from 'react-icons/lu'
 
@@ -14,22 +17,12 @@ interface HomingStatusCardProps {
 
 export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
   const motors = useTelemetryStore((s) => s.motors)
-  const [preflights, setPreflights] = useState<Record<string, PreflightResult>>({})
-  const [homing, setHoming] = useState<Record<string, boolean>>({})
+  const qc = useQueryClient()
+  const preflightQueries = useRobotArmPreflights(armSides)
+  const homeMut = useHomeArmMutation()
+  const [dismissedPreflight, setDismissedPreflight] = useState<Record<string, boolean>>({})
   const [homeResults, setHomeResults] = useState<Record<string, HomeResponse>>({})
-
-  const runPreflight = async (side: string) => {
-    try {
-      const pf = await getArmPreflight(side)
-      setPreflights((prev) => ({ ...prev, [side]: pf }))
-    } catch {
-      // silently ignore — will show no preflight data
-    }
-  }
-
-  useEffect(() => {
-    armSides.forEach(runPreflight)
-  }, [armSides])
+  const [homingSide, setHomingSide] = useState<string | null>(null)
 
   const motorList = Object.values(motors)
   const motorsWithHome = motorList.filter((m) => m.home_rad != null)
@@ -37,16 +30,17 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
   const awayCount = motorsWithHome.length - homedCount
 
   const handleHome = async (side: string) => {
-    setHoming((prev) => ({ ...prev, [side]: true }))
+    setHomingSide(side)
     try {
-      const result = await homeArm(side)
+      const result = await homeMut.mutateAsync({ side, override: false })
       setHomeResults((prev) => ({ ...prev, [side]: result }))
       if (result.success) {
         toast.success(`${side} arm homed`, {
           description: result.error ?? `${result.joints.length} joints processed`,
         })
       } else if (result.preflight) {
-        setPreflights((prev) => ({ ...prev, [side]: result.preflight! }))
+        void qc.invalidateQueries({ queryKey: linkKeys.armPreflight(side) })
+        setDismissedPreflight((d) => ({ ...d, [side]: false }))
         toast.error(`${side} arm: pre-flight failed`, { description: result.error })
       } else {
         toast.error(`${side} arm: homing failed`, { description: result.error })
@@ -56,7 +50,7 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
         description: e instanceof Error ? e.message : String(e),
       })
     } finally {
-      setHoming((prev) => ({ ...prev, [side]: false }))
+      setHomingSide(null)
     }
   }
 
@@ -89,22 +83,17 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {armSides.map((side) => {
-          const pf = preflights[side]
+        {armSides.map((side, i) => {
+          const pq = preflightQueries[i]
+          const pf = pq?.data
+          const showPreflight = pf && !pf.pass && !dismissedPreflight[side]
           return (
             <div key={side}>
-              {pf && !pf.pass && (
+              {showPreflight && (
                 <PreflightAlert
                   side={side}
                   preflight={pf}
-                  onRefresh={() => runPreflight(side)}
-                  onDismiss={() =>
-                    setPreflights((prev) => {
-                      const next = { ...prev }
-                      delete next[side]
-                      return next
-                    })
-                  }
+                  onDismiss={() => setDismissedPreflight((d) => ({ ...d, [side]: true }))}
                 />
               )}
 
@@ -113,12 +102,12 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleHome(side)}
-                  disabled={!!homing[side]}
+                  onClick={() => void handleHome(side)}
+                  disabled={homingSide !== null}
                   className="gap-1.5 h-7 text-xs"
                 >
                   <LuHouse className="size-3" />
-                  {homing[side] ? 'Homing...' : 'Home'}
+                  {homingSide === side ? 'Homing...' : 'Home'}
                 </Button>
               </div>
 

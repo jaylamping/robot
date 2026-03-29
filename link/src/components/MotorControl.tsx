@@ -14,14 +14,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import type { CommandResponse } from '@/lib/api'
 import {
-  enableMotor,
-  disableMotor,
-  zeroMotor,
-  moveMotor,
-  controlMotor,
-  type CommandResponse,
-} from '@/lib/api'
+  useEnableMotorMutation,
+  useDisableMotorMutation,
+  useZeroMotorMutation,
+  useMoveMotorMutation,
+  useControlMotorMutation,
+} from '@/lib/mutations/robot'
 
 interface MotorControlProps {
   canId: number
@@ -34,6 +34,11 @@ export function MotorControl({ canId, currentAngleRad, limitsRad }: MotorControl
   const [kp, setKp] = useState(30)
   const [kd, setKd] = useState(1)
   const [busy, setBusy] = useState(false)
+  const enableMut = useEnableMotorMutation()
+  const disableMut = useDisableMotorMutation()
+  const zeroMut = useZeroMotorMutation()
+  const moveMut = useMoveMotorMutation()
+  const controlMut = useControlMotorMutation()
 
   const minDeg = limitsRad ? (limitsRad[0] * 180) / Math.PI : -180
   const maxDeg = limitsRad ? (limitsRad[1] * 180) / Math.PI : 180
@@ -73,7 +78,7 @@ export function MotorControl({ canId, currentAngleRad, limitsRad }: MotorControl
             variant="default"
             confirmVariant="default"
             disabled={busy}
-            onConfirm={() => exec('Enable', () => enableMotor(canId))}
+            onConfirm={() => exec('Enable', () => enableMut.mutateAsync(canId))}
           />
           <ConfirmButton
             label="Disable"
@@ -81,12 +86,12 @@ export function MotorControl({ canId, currentAngleRad, limitsRad }: MotorControl
             variant="destructive"
             confirmVariant="destructive"
             disabled={busy}
-            onConfirm={() => exec('Disable', () => disableMotor(canId))}
+            onConfirm={() => exec('Disable', () => disableMut.mutateAsync(canId))}
           />
           <Button
             variant="outline"
             disabled={busy}
-            onClick={() => exec('Set Zero', () => zeroMotor(canId))}
+            onClick={() => exec('Set Zero', () => zeroMut.mutateAsync(canId))}
           >
             Set Zero
           </Button>
@@ -123,14 +128,23 @@ export function MotorControl({ canId, currentAngleRad, limitsRad }: MotorControl
             <Button
               className="w-full"
               disabled={busy}
-              onClick={() => exec('Move', () => moveMotor(canId, (positionDeg * Math.PI) / 180, kp, kd))}
+              onClick={() =>
+                exec('Move', () =>
+                  moveMut.mutateAsync({
+                    id: canId,
+                    position_rad: (positionDeg * Math.PI) / 180,
+                    kp,
+                    kd,
+                  }),
+                )
+              }
             >
               Move
             </Button>
           </TabsContent>
 
           <TabsContent value="raw" className="pt-3">
-            <RawControlForm canId={canId} busy={busy} exec={exec} />
+            <RawControlForm canId={canId} busy={busy} exec={exec} controlMut={controlMut} />
           </TabsContent>
         </Tabs>
       </CardContent>
@@ -142,10 +156,12 @@ function RawControlForm({
   canId,
   busy,
   exec,
+  controlMut,
 }: {
   canId: number
   busy: boolean
   exec: (label: string, fn: () => Promise<CommandResponse>) => Promise<void>
+  controlMut: ReturnType<typeof useControlMotorMutation>
 }) {
   const [pos, setPos] = useState(0)
   const [vel, setVel] = useState(0)
@@ -166,7 +182,18 @@ function RawControlForm({
         variant="outline"
         className="w-full"
         disabled={busy}
-        onClick={() => exec('Send Control', () => controlMotor(canId, pos, vel, rkp, rkd, trq))}
+        onClick={() =>
+          exec('Send Control', () =>
+            controlMut.mutateAsync({
+              id: canId,
+              position: pos,
+              velocity: vel,
+              kp: rkp,
+              kd: rkd,
+              torque: trq,
+            }),
+          )
+        }
       >
         Send
       </Button>

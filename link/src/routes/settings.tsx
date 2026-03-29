@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
-import { getConfig, type RobotConfig } from '@/lib/api'
+import { useRobotConfig } from '@/lib/queries'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -16,30 +15,25 @@ export const Route = createFileRoute('/settings')({
 })
 
 function SettingsPage() {
-  const [config, setConfig] = useState<RobotConfig | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const configQ = useRobotConfig()
 
-  useEffect(() => {
-    getConfig()
-      .then(setConfig)
-      .catch((e) => setError(e.message))
-  }, [])
-
-  if (error) {
+  if (configQ.isError) {
     return (
       <div className="flex items-center justify-center h-64">
-        <p className="text-destructive text-sm">{error}</p>
+        <p className="text-destructive text-sm">{configQ.error.message}</p>
       </div>
     )
   }
 
-  if (!config) {
+  if (configQ.isPending || !configQ.data) {
     return (
       <div className="flex items-center justify-center h-64">
         <p className="text-muted-foreground text-sm">Loading configuration...</p>
       </div>
     )
   }
+
+  const config = configQ.data
 
   return (
     <div>

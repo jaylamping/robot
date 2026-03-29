@@ -1,12 +1,15 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
-import { getMotors, getConfig, getJointSlots, discoverMotors, type MotorInfo, type RobotConfig, type JointSlot, type DiscoverResult } from '@/lib/api'
+import { useState } from 'react'
+import type { DiscoverResult } from '@/lib/api'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { MotorCard } from '@/components/MotorCard'
 import { RobotDiagram } from '@/components/RobotDiagram'
 import { HomingStatusCard } from '@/components/HomingStatusCard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useRobotConfig, useRobotJointSlots, useRobotMotors } from '@/lib/queries'
+import { useDiscoverMutation } from '@/lib/mutations/robot'
+import { toast } from 'sonner'
 import { LuBot, LuRadar } from 'react-icons/lu'
 
 export const Route = createFileRoute('/')({
@@ -14,39 +17,35 @@ export const Route = createFileRoute('/')({
 })
 
 function OverviewPage() {
-  const [motors, setMotors] = useState<MotorInfo[]>([])
-  const [config, setConfig] = useState<RobotConfig | null>(null)
-  const [jointSlots, setJointSlots] = useState<JointSlot[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [discovering, setDiscovering] = useState(false)
   const [discoverResult, setDiscoverResult] = useState<DiscoverResult | null>(null)
   const navigate = useNavigate()
   const telemetryMotors = useTelemetryStore((s) => s.motors)
 
-  const refreshMotors = () => {
-    return Promise.all([getMotors(), getConfig(), getJointSlots()])
-      .then(([m, c, s]) => { setMotors(m); setConfig(c); setJointSlots(s); setError(null) })
-      .catch((e) => setError(e.message))
-  }
+  const motorsQ = useRobotMotors()
+  const configQ = useRobotConfig()
+  const jointSlotsQ = useRobotJointSlots()
+  const discoverMut = useDiscoverMutation()
 
-  useEffect(() => {
-    refreshMotors().finally(() => setLoading(false))
-    // Initial load only; subsequent refreshes are user-triggered.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const loading = motorsQ.isPending || configQ.isPending || jointSlotsQ.isPending
+  const error =
+    motorsQ.error ?? configQ.error ?? jointSlotsQ.error
+      ? String(motorsQ.error?.message ?? configQ.error?.message ?? jointSlotsQ.error?.message ?? 'Error')
+      : null
+
+  const motors = motorsQ.data ?? []
+  const config = configQ.data ?? null
+  const jointSlots = jointSlotsQ.data ?? []
 
   const handleDiscover = async () => {
-    setDiscovering(true)
     setDiscoverResult(null)
     try {
-      const result = await discoverMotors()
+      const result = await discoverMut.mutateAsync()
       setDiscoverResult(result)
-      await refreshMotors()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Discovery failed')
-    } finally {
-      setDiscovering(false)
+      setDiscoverResult(null)
+      toast.error('Discovery failed', {
+        description: e instanceof Error ? e.message : String(e),
+      })
     }
   }
 
@@ -89,6 +88,11 @@ function OverviewPage() {
   const onlineMotors = motors.filter((m) => telemetryMotors[m.can_id]?.online)
   const offlineMotors = motors.filter((m) => !telemetryMotors[m.can_id]?.online)
 
+  const homingArmSides = [
+    ...(config?.arm_left ? ['left'] : []),
+    ...(config?.arm_right ? ['right'] : []),
+  ]
+
   return (
     <div>
       <div className="mb-6">
@@ -97,12 +101,12 @@ function OverviewPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={handleDiscover}
-            disabled={discovering}
+            onClick={() => void handleDiscover()}
+            disabled={discoverMut.isPending}
             className="gap-2"
           >
-            <LuRadar className={`size-4 ${discovering ? 'animate-spin' : ''}`} />
-            {discovering ? 'Scanning...' : 'Discover'}
+            <LuRadar className={`size-4 ${discoverMut.isPending ? 'animate-spin' : ''}`} />
+            {discoverMut.isPending ? 'Scanning...' : 'Discover'}
           </Button>
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -140,12 +144,7 @@ function OverviewPage() {
 
       {config && (
         <div className="mb-6">
-          <HomingStatusCard
-            armSides={[
-              ...(config.arm_left ? ['left'] : []),
-              ...(config.arm_right ? ['right'] : []),
-            ]}
-          />
+          <HomingStatusCard armSides={homingArmSides} />
         </div>
       )}
 
@@ -170,7 +169,6 @@ function OverviewPage() {
                 key={motor.can_id}
                 motor={motor}
                 jointSlots={jointSlots}
-                onAssigned={refreshMotors}
                 onClick={() => navigate({ to: '/motor/$id', params: { id: String(motor.can_id) } })}
               />
             ))}
@@ -189,7 +187,6 @@ function OverviewPage() {
                 key={motor.can_id}
                 motor={motor}
                 jointSlots={jointSlots}
-                onAssigned={refreshMotors}
                 onClick={() => navigate({ to: '/motor/$id', params: { id: String(motor.can_id) } })}
               />
             ))}

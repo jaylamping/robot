@@ -11,14 +11,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import type { MotorInfo, JointSlot } from '@/lib/api'
-import { assignMotor, unassignMotor } from '@/lib/api'
+import { useAssignMotorMutation, useUnassignMotorMutation } from '@/lib/mutations/robot'
 import { useTelemetryStore, type MotorSnapshot } from '@/stores/telemetry'
 import { LuPencil, LuX } from 'react-icons/lu'
 
 interface MotorCardProps {
   motor: MotorInfo
   jointSlots?: JointSlot[]
-  onAssigned?: () => void
   onClick?: () => void
 }
 
@@ -28,9 +27,11 @@ const SECTION_LABELS: Record<string, string> = {
   waist: 'Waist',
 }
 
-export function MotorCard({ motor, jointSlots, onAssigned, onClick }: MotorCardProps) {
+export function MotorCard({ motor, jointSlots, onClick }: MotorCardProps) {
   const live = useTelemetryStore((s) => s.motors[motor.can_id]) as MotorSnapshot | undefined
   const [assigning, setAssigning] = useState(false)
+  const assignMut = useAssignMotorMutation()
+  const unassignMut = useUnassignMotorMutation()
 
   const isOnline = live?.online ?? motor.online
   const hasFaults = (live?.faults?.length ?? 0) > 0
@@ -63,11 +64,14 @@ export function MotorCard({ motor, jointSlots, onAssigned, onClick }: MotorCardP
   const handleAssign = async (section: string, joint: string) => {
     setAssigning(true)
     try {
-      const res = await assignMotor(motor.can_id, section, joint)
+      const res = await assignMut.mutateAsync({
+        id: motor.can_id,
+        section,
+        joint,
+      })
       if (!res.success) {
         console.error('Assign failed:', res.error)
       }
-      onAssigned?.()
     } catch (e) {
       console.error('Assign error:', e)
     } finally {
@@ -79,11 +83,10 @@ export function MotorCard({ motor, jointSlots, onAssigned, onClick }: MotorCardP
     e.stopPropagation()
     setAssigning(true)
     try {
-      const res = await unassignMotor(motor.can_id)
+      const res = await unassignMut.mutateAsync(motor.can_id)
       if (!res.success) {
         console.error('Unassign failed:', res.error)
       }
-      onAssigned?.()
     } catch (e) {
       console.error('Unassign error:', e)
     } finally {

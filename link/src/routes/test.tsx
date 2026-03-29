@@ -1,25 +1,22 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import type { CommandResponse, SequenceInfo } from '@/lib/api'
+import { useRobotMotors, useRobotSequences } from '@/lib/queries'
 import {
-  getMotors,
-  enableMotor,
-  disableMotor,
-  zeroMotor,
-  moveMotor,
-  controlMotor,
-  spinMotor,
-  torqueMotor,
-  jogMotor,
-  stopMotor,
-  estopAll,
-  discoverMotors,
-  getSequences,
-  runSequence,
-  type MotorInfo,
-  type CommandResponse,
-  type SequenceInfo,
-} from '@/lib/api'
+  useDiscoverMutation,
+  useEstopMutation,
+  useEnableMotorMutation,
+  useDisableMotorMutation,
+  useZeroMotorMutation,
+  useMoveMotorMutation,
+  useControlMotorMutation,
+  useSpinMotorMutation,
+  useTorqueMotorMutation,
+  useJogMotorMutation,
+  useStopMotorMutation,
+  useRunSequenceMutation,
+} from '@/lib/mutations/robot'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -50,38 +47,40 @@ export const Route = createFileRoute('/test')({
 })
 
 function TestPage() {
-  const [motors, setMotors] = useState<MotorInfo[]>([])
-  const [sequences, setSequences] = useState<SequenceInfo[]>([])
-  const [selectedMotorId, setSelectedMotorId] = useState<number | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [discovering, setDiscovering] = useState(false)
+  const motorsQ = useRobotMotors()
+  const sequencesQ = useRobotSequences()
+  const discoverMut = useDiscoverMutation()
+  const estopMut = useEstopMutation()
+  const enableMut = useEnableMotorMutation()
+  const disableMut = useDisableMotorMutation()
+  const zeroMut = useZeroMotorMutation()
+  const stopMut = useStopMotorMutation()
 
-  const refreshMotors = async () => {
-    const m = await getMotors()
-    setMotors(m)
-    if (m.length > 0 && (selectedMotorId === null || !m.some(x => x.can_id === selectedMotorId))) {
-      setSelectedMotorId(m[0].can_id)
-    }
-  }
+  const [selectedMotorId, setSelectedMotorId] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const motors = motorsQ.data ?? []
+  const sequences = sequencesQ.data ?? []
+  const loading = motorsQ.isPending || sequencesQ.isPending
 
   useEffect(() => {
-    Promise.all([getMotors(), getSequences()])
-      .then(([m, s]) => {
-        setMotors(m)
-        setSequences(s)
-        if (m.length > 0 && selectedMotorId === null) {
-          setSelectedMotorId(m[0].can_id)
-        }
-      })
-      .catch((e) => toast.error('Failed to load', { description: e.message }))
-      .finally(() => setLoading(false))
-  }, [])
+    if (motors.length > 0 && (selectedMotorId === null || !motors.some((x) => x.can_id === selectedMotorId))) {
+      setSelectedMotorId(motors[0].can_id)
+    }
+  }, [motors, selectedMotorId])
+
+  useEffect(() => {
+    if (motorsQ.isError && motorsQ.error) {
+      toast.error('Failed to load motors', { description: motorsQ.error.message })
+    }
+    if (sequencesQ.isError && sequencesQ.error) {
+      toast.error('Failed to load sequences', { description: sequencesQ.error.message })
+    }
+  }, [motorsQ.isError, motorsQ.error, sequencesQ.isError, sequencesQ.error])
 
   async function handleDiscover() {
-    setDiscovering(true)
     try {
-      const result = await discoverMotors()
+      const result = await discoverMut.mutateAsync()
       if (result.discovered.length > 0) {
         toast.success(`Discovered ${result.discovered.length} motor(s)`, {
           description: `CAN IDs: ${result.discovered.join(', ')}`,
@@ -91,13 +90,10 @@ function TestPage() {
       } else {
         toast.info(`No changes — ${result.total} motor(s) online`)
       }
-      await refreshMotors()
     } catch (e) {
       toast.error('Discovery failed', {
         description: e instanceof Error ? e.message : String(e),
       })
-    } finally {
-      setDiscovering(false)
     }
   }
 
@@ -126,7 +122,7 @@ function TestPage() {
   async function handleEstop() {
     setBusy(true)
     try {
-      const res = await estopAll()
+      const res = await estopMut.mutateAsync()
       if (res.success) {
         toast.success('E-STOP: All motors disabled')
       } else {
@@ -159,12 +155,12 @@ function TestPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={handleDiscover}
-            disabled={discovering || busy}
+            onClick={() => void handleDiscover()}
+            disabled={discoverMut.isPending || busy}
             className="gap-2"
           >
-            <LuRadar className={`size-4 ${discovering ? 'animate-spin' : ''}`} />
-            {discovering ? 'Scanning...' : 'Discover'}
+            <LuRadar className={`size-4 ${discoverMut.isPending ? 'animate-spin' : ''}`} />
+            {discoverMut.isPending ? 'Scanning...' : 'Discover'}
           </Button>
           <Button
             variant="destructive"
@@ -214,7 +210,7 @@ function TestPage() {
                       variant="default"
                       confirmVariant="default"
                       disabled={busy}
-                      onConfirm={() => exec('Enable', () => enableMotor(selectedMotorId))}
+                      onConfirm={() => exec('Enable', () => enableMut.mutateAsync(selectedMotorId))}
                     />
                     <ConfirmButton
                       label="Disable"
@@ -222,19 +218,19 @@ function TestPage() {
                       variant="outline"
                       confirmVariant="destructive"
                       disabled={busy}
-                      onConfirm={() => exec('Disable', () => disableMotor(selectedMotorId))}
+                      onConfirm={() => exec('Disable', () => disableMut.mutateAsync(selectedMotorId))}
                     />
                     <Button
                       variant="outline"
                       disabled={busy}
-                      onClick={() => exec('Set Zero', () => zeroMotor(selectedMotorId))}
+                      onClick={() => exec('Set Zero', () => zeroMut.mutateAsync(selectedMotorId))}
                     >
                       Set Zero
                     </Button>
                     <Button
                       variant="destructive"
                       disabled={busy}
-                      onClick={() => exec('Stop', () => stopMotor(selectedMotorId))}
+                      onClick={() => exec('Stop', () => stopMut.mutateAsync(selectedMotorId))}
                     >
                       <LuOctagonX className="size-4 mr-1" />
                       Stop
@@ -339,6 +335,7 @@ function ReadoutCell({ label, value }: { label: string; value: React.ReactNode }
 type ExecFn = (label: string, fn: () => Promise<CommandResponse>) => Promise<void>
 
 function JogTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: ExecFn }) {
+  const jogMut = useJogMotorMutation()
   const [customDeg, setCustomDeg] = useState(15)
   const [kp, setKp] = useState(30)
   const [kd, setKd] = useState(1)
@@ -358,7 +355,11 @@ function JogTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Exe
               variant="outline"
               size="sm"
               disabled={busy}
-              onClick={() => exec(`Jog -${deg}°`, () => jogMotor(canId, -deg, kp, kd))}
+              onClick={() =>
+                exec(`Jog -${deg}°`, () =>
+                  jogMut.mutateAsync({ id: canId, delta_deg: -deg, kp, kd }),
+                )
+              }
             >
               -{deg}°
             </Button>
@@ -366,7 +367,11 @@ function JogTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Exe
               variant="outline"
               size="sm"
               disabled={busy}
-              onClick={() => exec(`Jog +${deg}°`, () => jogMotor(canId, deg, kp, kd))}
+              onClick={() =>
+                exec(`Jog +${deg}°`, () =>
+                  jogMut.mutateAsync({ id: canId, delta_deg: deg, kp, kd }),
+                )
+              }
             >
               +{deg}°
             </Button>
@@ -380,14 +385,22 @@ function JogTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Exe
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() => exec(`Jog -${customDeg}°`, () => jogMotor(canId, -customDeg, kp, kd))}
+          onClick={() =>
+            exec(`Jog -${customDeg}°`, () =>
+              jogMut.mutateAsync({ id: canId, delta_deg: -customDeg, kp, kd }),
+            )
+          }
         >
           -{customDeg}°
         </Button>
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() => exec(`Jog +${customDeg}°`, () => jogMotor(canId, customDeg, kp, kd))}
+          onClick={() =>
+            exec(`Jog +${customDeg}°`, () =>
+              jogMut.mutateAsync({ id: canId, delta_deg: customDeg, kp, kd }),
+            )
+          }
         >
           +{customDeg}°
         </Button>
@@ -397,6 +410,7 @@ function JogTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Exe
 }
 
 function SpinTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: ExecFn }) {
+  const spinMut = useSpinMotorMutation()
   const [velocity, setVelocity] = useState(0)
   const [kd, setKd] = useState(1)
 
@@ -427,14 +441,18 @@ function SpinTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Ex
         <Button
           className="flex-1"
           disabled={busy}
-          onClick={() => exec('Spin', () => spinMotor(canId, velocity, kd))}
+          onClick={() =>
+            exec('Spin', () => spinMut.mutateAsync({ id: canId, velocity_rads: velocity, kd }))
+          }
         >
           Start Spin
         </Button>
         <Button
           variant="destructive"
           disabled={busy}
-          onClick={() => exec('Stop Spin', () => spinMotor(canId, 0, kd))}
+          onClick={() =>
+            exec('Stop Spin', () => spinMut.mutateAsync({ id: canId, velocity_rads: 0, kd }))
+          }
         >
           Stop
         </Button>
@@ -444,6 +462,7 @@ function SpinTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: Ex
 }
 
 function TorqueTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: ExecFn }) {
+  const torqueMut = useTorqueMotorMutation()
   const [torque, setTorque] = useState(0)
 
   return (
@@ -470,14 +489,18 @@ function TorqueTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: 
         <Button
           className="flex-1"
           disabled={busy}
-          onClick={() => exec('Torque', () => torqueMotor(canId, torque))}
+          onClick={() =>
+            exec('Torque', () => torqueMut.mutateAsync({ id: canId, torque_nm: torque }))
+          }
         >
           Apply Torque
         </Button>
         <Button
           variant="destructive"
           disabled={busy}
-          onClick={() => exec('Stop Torque', () => torqueMotor(canId, 0))}
+          onClick={() =>
+            exec('Stop Torque', () => torqueMut.mutateAsync({ id: canId, torque_nm: 0 }))
+          }
         >
           Stop
         </Button>
@@ -497,6 +520,7 @@ function PositionTab({
   busy: boolean
   exec: ExecFn
 }) {
+  const moveMut = useMoveMotorMutation()
   const [positionDeg, setPositionDeg] = useState(0)
   const [kp, setKp] = useState(30)
   const [kd, setKd] = useState(1)
@@ -530,7 +554,16 @@ function PositionTab({
       <Button
         className="w-full"
         disabled={busy}
-        onClick={() => exec('Move', () => moveMotor(canId, (positionDeg * Math.PI) / 180, kp, kd))}
+        onClick={() =>
+          exec('Move', () =>
+            moveMut.mutateAsync({
+              id: canId,
+              position_rad: (positionDeg * Math.PI) / 180,
+              kp,
+              kd,
+            }),
+          )
+        }
       >
         Move to Position
       </Button>
@@ -539,6 +572,7 @@ function PositionTab({
 }
 
 function RawMitTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: ExecFn }) {
+  const controlMut = useControlMotorMutation()
   const [pos, setPos] = useState(0)
   const [vel, setVel] = useState(0)
   const [kp, setKp] = useState(30)
@@ -558,7 +592,18 @@ function RawMitTab({ canId, busy, exec }: { canId: number; busy: boolean; exec: 
         variant="outline"
         className="w-full"
         disabled={busy}
-        onClick={() => exec('Send Control', () => controlMotor(canId, pos, vel, kp, kd, trq))}
+        onClick={() =>
+          exec('Send Control', () =>
+            controlMut.mutateAsync({
+              id: canId,
+              position: pos,
+              velocity: vel,
+              kp,
+              kd,
+              torque: trq,
+            }),
+          )
+        }
       >
         Send
       </Button>
@@ -575,11 +620,12 @@ function SequencePanel({
   busy: boolean
   exec: ExecFn
 }) {
+  const runSeqMut = useRunSequenceMutation()
   const [runningSeq, setRunningSeq] = useState<string | null>(null)
 
   async function handleRun(name: string) {
     setRunningSeq(name)
-    await exec(`Sequence: ${name}`, () => runSequence(name))
+    await exec(`Sequence: ${name}`, () => runSeqMut.mutateAsync(name))
     setRunningSeq(null)
   }
 
