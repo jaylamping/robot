@@ -137,6 +137,18 @@ fn default_recovery_direct_command_within_rad() -> f64 {
     0.12
 }
 
+fn default_kp_settle() -> f32 {
+    30.0
+}
+
+fn default_kd_settle() -> f32 {
+    1.0
+}
+
+fn default_settle_ramp_ticks() -> u32 {
+    20
+}
+
 /// When |position − home| exceeds `large_error_rad` at startup: optional **fast approach** toward
 /// home, then **gradual** small steps. If torque stays high while velocity is near zero (stall /
 /// contact), the joint holds, waits `resistance_backoff_ms`, then **continues** the same routine
@@ -203,6 +215,18 @@ pub struct StartupRecoveryConfig {
     /// command `target` directly each cycle (soft gains) instead of only `pos±step` — helps stiction.
     #[serde(default = "default_recovery_direct_command_within_rad")]
     pub recovery_direct_command_within_rad: f64,
+    /// Position gain for the final settle ramp. Once inside `recovery_direct_command_within_rad`,
+    /// kp ramps linearly from `kp_soft` up to this value over `settle_ramp_ticks` cycles so the
+    /// motor has enough authority to close the last few degrees against gravity/friction.
+    #[serde(default = "default_kp_settle")]
+    pub kp_settle: f32,
+    /// Damping gain for the final settle ramp (pairs with `kp_settle`).
+    #[serde(default = "default_kd_settle")]
+    pub kd_settle: f32,
+    /// How many control cycles to ramp from soft gains to settle gains once inside the direct
+    /// command zone. Higher = gentler ramp. 0 or 1 = jump immediately to settle gains.
+    #[serde(default = "default_settle_ramp_ticks")]
+    pub settle_ramp_ticks: u32,
 }
 
 impl Default for StartupRecoveryConfig {
@@ -230,6 +254,9 @@ impl Default for StartupRecoveryConfig {
             prefer_shortest_angle: default_true(),
             stall_detection_min_linear_error_rad: default_stall_detection_min_linear_error_rad(),
             recovery_direct_command_within_rad: default_recovery_direct_command_within_rad(),
+            kp_settle: default_kp_settle(),
+            kd_settle: default_kd_settle(),
+            settle_ramp_ticks: default_settle_ramp_ticks(),
         }
     }
 }

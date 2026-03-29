@@ -336,6 +336,10 @@ impl Motor {
         let backoff = Duration::from_millis(cfg.resistance_backoff_ms);
         let stall_min_err = cfg.stall_detection_min_linear_error_rad as f32;
 
+        let kp_settle = cfg.kp_settle;
+        let kd_settle = cfg.kd_settle;
+        let settle_ramp_ticks = cfg.settle_ramp_ticks.max(1);
+
         let start = Instant::now();
         let approach_limit = Duration::from_secs_f64(cfg.approach_max_secs);
 
@@ -408,6 +412,7 @@ impl Motor {
 
         let mut resistance_streak = 0u32;
         let mut prev_linear_mag = f32::INFINITY;
+        let mut settle_ticks = 0u32;
         while start.elapsed() < timeout {
             let pos = self.read_position().await?;
             let linear_mag = linear_error(pos, target_rad).abs();
@@ -420,21 +425,33 @@ impl Motor {
                 return Ok(stall_backoffs);
             }
 
+            let in_direct_zone = linear_mag <= direct_within;
             let cap = max_step_rad * motion_scale;
-            let cmd_pos = if linear_mag <= direct_within {
+            let cmd_pos = if in_direct_zone {
                 clamp_cmd_to_limits(target_rad, joint_limits_rad)
             } else {
+                settle_ticks = 0;
                 let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
                 let step = delta.clamp(-cap, cap);
                 clamp_cmd_to_limits(pos + step, joint_limits_rad)
+            };
+
+            let (kp_cmd, kd_cmd) = if in_direct_zone {
+                settle_ticks = settle_ticks.saturating_add(1);
+                let t = (settle_ticks as f32 / settle_ramp_ticks as f32).min(1.0);
+                let kp = kp_soft + (kp_settle - kp_soft) * t;
+                let kd = kd_soft + (kd_settle - kd_soft) * t;
+                (kp * motion_scale, kd * motion_scale)
+            } else {
+                (kp_soft * motion_scale, kd_soft * motion_scale)
             };
 
             let state = self
                 .send_control(
                     cmd_pos,
                     0.0,
-                    kp_soft * motion_scale,
-                    kd_soft * motion_scale,
+                    kp_cmd,
+                    kd_cmd,
                     0.0,
                 )
                 .await?;
