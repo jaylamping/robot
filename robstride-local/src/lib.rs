@@ -10,6 +10,6 @@ pub use actuator_types::*;
 pub use actuators::*;
 pub use protocol::Protocol;
 pub use supervisor::*;
-pub use transport::{CH341Transport, StubTransport, Transport, TransportType};
+pub use transport::{CH341Transport, LoopbackSimTransport, StubTransport, Transport, TransportType};
 #[cfg(feature = "socketcan")]
 pub use transport::SocketCanTransport;

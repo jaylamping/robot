@@ -1,18 +1,29 @@
 //! Integration test for the Motor API.
-//! Requires hardware: RS03 motor on CAN ID 127, CAN2USB on COM5.
+//! Requires hardware: RS03 on the CAN ID from `config/robot.yaml`, CAN2USB on COM5.
 //! Run with: cargo test --test motor_test -- --nocapture
+
+use std::path::PathBuf;
 
 use cortex::config::RobotConfig;
 use cortex::motor::{create_ch341_protocol, Motor};
 
+fn repo_robot_yaml() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/robot.yaml")
+}
+
 #[tokio::test]
 async fn smoke_test_motor_api() {
-    let config = RobotConfig::load("config/robot.yaml").expect("Failed to load config");
+    let config = RobotConfig::load(repo_robot_yaml()).expect("Failed to load config");
     let protocol = create_ch341_protocol(&config.bus.port)
         .await
         .expect("Failed to open CH341 transport");
 
-    let mut motor = Motor::new(protocol, 127);
+    let can_id = config
+        .arm_left
+        .as_ref()
+        .and_then(|a| a.shoulder_pitch.can_id)
+        .expect("shoulder_pitch can_id in config");
+    let mut motor = Motor::new(protocol, can_id);
 
     let state = motor.enable().await.expect("Failed to enable");
     println!("Enabled:");
@@ -40,14 +51,14 @@ async fn smoke_test_motor_api() {
 
 #[tokio::test]
 async fn config_loads_correctly() {
-    let config = RobotConfig::load("config/robot.yaml").expect("Failed to load config");
+    let config = RobotConfig::load(repo_robot_yaml()).expect("Failed to load config");
 
     assert_eq!(config.bus.port, "COM5");
     assert_eq!(config.bus.baud, 921600);
     assert_eq!(config.bus.host_id, 0xAA);
 
     let arm = config.arm_left.as_ref().expect("No left arm config");
-    assert_eq!(arm.shoulder_pitch.can_id, Some(127));
+    assert_eq!(arm.shoulder_pitch.can_id, Some(8));
     assert_eq!(arm.shoulder_roll.can_id, None);
 
     let rs03 = config.actuators.get("rs03").expect("No RS03 actuator spec");

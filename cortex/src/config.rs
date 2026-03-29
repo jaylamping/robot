@@ -129,12 +129,13 @@ fn default_post_stall_motion_scale() -> f64 {
 }
 
 /// Below this linear distance to target, stall detection is off (final creep is slow and reads like a stall).
+/// Must be >= `approach_handoff_rad` so gradual phase after handoff does not false-trigger on gravity-loaded joints.
 fn default_stall_detection_min_linear_error_rad() -> f64 {
-    0.26
+    0.30
 }
 
 fn default_recovery_direct_command_within_rad() -> f64 {
-    0.12
+    0.18
 }
 
 fn default_kp_settle() -> f32 {

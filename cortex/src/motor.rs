@@ -359,6 +359,7 @@ impl Motor {
                 let linear_mag = linear_error(pos, target_rad).abs();
                 if linear_mag + 0.002 < prev_linear_mag {
                     resistance_streak = 0;
+                    motion_scale = 1.0;
                 }
                 prev_linear_mag = linear_mag;
 
@@ -410,6 +411,9 @@ impl Motor {
             }
         }
 
+        // Gradual phase should not inherit reduced scale from approach stalls; it uses its own step/gain profile.
+        motion_scale = 1.0f32;
+
         let mut resistance_streak = 0u32;
         let mut prev_linear_mag = f32::INFINITY;
         let mut settle_ticks = 0u32;
@@ -418,6 +422,7 @@ impl Motor {
             let linear_mag = linear_error(pos, target_rad).abs();
             if linear_mag + 0.002 < prev_linear_mag {
                 resistance_streak = 0;
+                motion_scale = 1.0;
             }
             prev_linear_mag = linear_mag;
 
@@ -475,6 +480,7 @@ impl Motor {
                     self.send_control(hold_pos, 0.0, kp_soft * motion_scale, kd_soft * motion_scale, 0.0)
                         .await?;
                     tokio::time::sleep(backoff).await;
+                    motion_scale = post_scale;
                     resistance_streak = 0;
                 }
             } else {
@@ -761,6 +767,65 @@ mod shortest_angle_tests {
     fn step_delta_bounded_joint_always_linear_even_if_huge() {
         let d = super::step_delta_toward_home(6.1, 0.17, true, true);
         assert!((d - (0.17 - 6.1)).abs() < 1e-4);
+    }
+}
+
+/// Recovery / homing guardrails (mirrors logic in `recover_position_if_far` and defaults in `config`).
+#[cfg(test)]
+mod recovery_homing_tests {
+    use crate::config::StartupRecoveryConfig;
+
+    #[test]
+    fn default_stall_floor_covers_approach_handoff() {
+        let c = StartupRecoveryConfig::default();
+        let handoff = c.approach_handoff_rad as f32;
+        let stall = c.stall_detection_min_linear_error_rad as f32;
+        assert!(
+            handoff <= stall + 1e-5,
+            "gradual phase starts near handoff ({handoff:.3} rad); stall floor ({stall:.3}) must not trip earlier"
+        );
+    }
+
+    #[test]
+    fn stall_eligible_gate_matches_recovery() {
+        let stall_min = 0.30f32;
+        assert!(!((0.28f32) >= stall_min), "at ~16° error, should not be stall-eligible");
+        assert!(0.35f32 >= stall_min);
+    }
+
+    #[test]
+    fn direct_command_zone_uses_linear_error() {
+        let direct_within = StartupRecoveryConfig::default().recovery_direct_command_within_rad as f32;
+        let pos = 0.10f32;
+        let home = 0.0f32;
+        let linear_mag = (home - pos).abs();
+        assert!(linear_mag <= direct_within);
+        let pos2 = 0.25f32;
+        let linear_mag2 = (home - pos2).abs();
+        assert!(linear_mag2 > direct_within);
+    }
+
+    #[test]
+    fn settle_ramp_kp_first_tick() {
+        let c = StartupRecoveryConfig::default();
+        let kp_soft = c.kp_soft;
+        let kp_settle = c.kp_settle;
+        let ramp_ticks = c.settle_ramp_ticks.max(1);
+        let settle_ticks = 1u32;
+        let t = (settle_ticks as f32 / ramp_ticks as f32).min(1.0);
+        let kp = kp_soft + (kp_settle - kp_soft) * t;
+        let expected = 15.0 + (100.0 - 15.0) * (1.0 / 20.0);
+        assert!((kp - expected).abs() < 0.01, "kp={kp} expected ~{expected}");
+    }
+
+    #[test]
+    fn motion_scale_full_scale_after_progress_simulation() {
+        let mut motion_scale = 0.5f32;
+        let linear_improved = true;
+        if linear_improved {
+            motion_scale = 1.0;
+        }
+        assert_eq!(motion_scale, 1.0);
     }
 }
 

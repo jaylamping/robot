@@ -7,6 +7,10 @@ edition = "2024"
 default = []
 socketcan = ["robstride/socketcan"]
 
+[dev-dependencies]
+robstride = { path = "../robstride-local" }
+serde_yaml = "0.9"
+
 [dependencies]
 robstride = { path = "../robstride-local" }
 tokio = { version = "1", features = ["full"] }
