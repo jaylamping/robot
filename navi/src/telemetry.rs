@@ -12,6 +12,13 @@ use crate::AppState;
 /// under load; marking motors offline spuriously breaks the Link Overview.
 const MOTOR_READ_TIMEOUT: Duration = Duration::from_millis(400);
 
+/// After this many consecutive read failures a motor is temporarily skipped to avoid blocking
+/// the bus for motors that are actually online.
+const CONSECUTIVE_FAIL_SKIP_THRESHOLD: u32 = 5;
+
+/// When a motor has been skipped due to consecutive failures, re-probe it every N ticks.
+const REPROBE_INTERVAL_TICKS: u32 = 40;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MotorSnapshot {
     pub can_id: u8,
@@ -50,13 +57,15 @@ pub async fn telemetry_loop(state: Arc<AppState>, rate_hz: u32, mock: bool) {
     let period = Duration::from_micros(1_000_000 / rate_hz as u64);
     let start = std::time::Instant::now();
     let mut system_telemetry = SystemTelemetryCollector::new();
+    let mut health = MotorHealthTracker::new();
 
     loop {
         let system = system_telemetry.sample();
         let snapshot = if mock {
             build_mock_snapshot(&state, start.elapsed().as_millis() as u64, system).await
         } else {
-            build_live_snapshot(&state, start.elapsed().as_millis() as u64, system).await
+            health.tick();
+            build_live_snapshot(&state, start.elapsed().as_millis() as u64, system, &mut health).await
         };
 
         *state.latest_telemetry.write().await = Some(snapshot.clone());
@@ -202,17 +211,59 @@ async fn build_mock_snapshot(
     }
 }
 
+/// Per-motor failure tracking so one dead motor doesn't block the rest of the bus.
+struct MotorHealthTracker {
+    consecutive_failures: HashMap<u8, u32>,
+    tick_count: u32,
+}
+
+impl MotorHealthTracker {
+    fn new() -> Self {
+        Self {
+            consecutive_failures: HashMap::new(),
+            tick_count: 0,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+    }
+
+    fn should_skip(&self, can_id: u8) -> bool {
+        let fails = self.consecutive_failures.get(&can_id).copied().unwrap_or(0);
+        if fails < CONSECUTIVE_FAIL_SKIP_THRESHOLD {
+            return false;
+        }
+        self.tick_count % REPROBE_INTERVAL_TICKS != 0
+    }
+
+    fn record_success(&mut self, can_id: u8) {
+        self.consecutive_failures.remove(&can_id);
+    }
+
+    fn record_failure(&mut self, can_id: u8) {
+        let entry = self.consecutive_failures.entry(can_id).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+}
+
 async fn build_live_snapshot(
     state: &AppState,
     timestamp_ms: u64,
     system: SystemSnapshot,
+    health: &mut MotorHealthTracker,
 ) -> TelemetrySnapshot {
-    let mut motors_guard = state.motors.lock().await;
     let joint_map = build_joint_name_map(state).await;
     let home_info = build_home_info(state).await;
+
+    let motor_ids: Vec<u8> = {
+        let motors_guard = state.motors.lock().await;
+        motors_guard.keys().copied().collect()
+    };
+
     let mut motors = Vec::new();
 
-    for (&can_id, motor) in motors_guard.iter_mut() {
+    for can_id in motor_ids {
         let joint_name = joint_map
             .get(&can_id)
             .cloned()
@@ -222,10 +273,37 @@ async fn build_live_snapshot(
             .copied()
             .unwrap_or((0.0, (-12.57, 12.57), 0.03));
 
-        let result = tokio::time::timeout(MOTOR_READ_TIMEOUT, motor.read_state()).await;
+        if health.should_skip(can_id) {
+            motors.push(MotorSnapshot {
+                can_id,
+                joint_name,
+                angle_rad: 0.0,
+                velocity_rads: 0.0,
+                torque_nm: 0.0,
+                temperature_c: 0.0,
+                mode: "Unknown".into(),
+                faults: vec!["skipped (not responding)".into()],
+                online: false,
+                home_rad: Some(home_rad),
+                home_error_rad: None,
+                at_home: false,
+                limits: Some(limits),
+            });
+            continue;
+        }
+
+        let result = {
+            let mut motors_guard = state.motors.lock().await;
+            if let Some(motor) = motors_guard.get_mut(&can_id) {
+                Some(tokio::time::timeout(MOTOR_READ_TIMEOUT, motor.read_state_validated()).await)
+            } else {
+                None
+            }
+        };
 
         match result {
-            Ok(Ok(ms)) => {
+            Some(Ok(Ok(ms))) => {
+                health.record_success(can_id);
                 let home_err = (ms.angle_rad - home_rad).abs();
                 motors.push(MotorSnapshot {
                     can_id,
@@ -243,8 +321,10 @@ async fn build_live_snapshot(
                     limits: Some(limits),
                 });
             }
-            Ok(Err(e)) => {
-                warn!(can_id, error = %e, "failed to read motor state");
+            Some(Ok(Err(e))) => {
+                health.record_failure(can_id);
+                let fails = health.consecutive_failures.get(&can_id).copied().unwrap_or(0);
+                warn!(can_id, error = %e, consecutive_failures = fails, "failed to read motor state");
                 motors.push(MotorSnapshot {
                     can_id,
                     joint_name,
@@ -261,8 +341,10 @@ async fn build_live_snapshot(
                     limits: Some(limits),
                 });
             }
-            Err(_) => {
-                warn!(can_id, "motor read timed out");
+            Some(Err(_)) => {
+                health.record_failure(can_id);
+                let fails = health.consecutive_failures.get(&can_id).copied().unwrap_or(0);
+                warn!(can_id, consecutive_failures = fails, "motor read timed out");
                 motors.push(MotorSnapshot {
                     can_id,
                     joint_name,
@@ -272,6 +354,23 @@ async fn build_live_snapshot(
                     temperature_c: 0.0,
                     mode: "Unknown".into(),
                     faults: vec!["timeout".into()],
+                    online: false,
+                    home_rad: Some(home_rad),
+                    home_error_rad: None,
+                    at_home: false,
+                    limits: Some(limits),
+                });
+            }
+            None => {
+                motors.push(MotorSnapshot {
+                    can_id,
+                    joint_name,
+                    angle_rad: 0.0,
+                    velocity_rads: 0.0,
+                    torque_nm: 0.0,
+                    temperature_c: 0.0,
+                    mode: "Unknown".into(),
+                    faults: vec!["motor removed".into()],
                     online: false,
                     home_rad: Some(home_rad),
                     home_error_rad: None,

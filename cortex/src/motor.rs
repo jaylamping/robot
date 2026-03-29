@@ -511,6 +511,37 @@ impl Motor {
         Ok(state)
     }
 
+    /// Read motor state via EnableCommand, but validate that the response actually
+    /// comes from this motor's CAN ID. Returns an error on CAN bus response mismatch
+    /// (e.g. when a disconnected motor's slot eats a frame from another motor).
+    pub async fn read_state_validated(&mut self) -> Result<MotorState> {
+        let cmd = EnableCommand {
+            host_id: self.host_id,
+        };
+        let (id, data) = cmd.to_can_packet(self.can_id);
+
+        let mut proto = self.protocol.lock().await;
+        proto.send(id, &data).await
+            .map_err(|e| anyhow::anyhow!("{:#}", e))?;
+        let (resp_id, resp_data) = proto.recv().await
+            .map_err(|e| anyhow::anyhow!("{:#}", e))?;
+        drop(proto);
+
+        let cmd = Command::from_can_packet(resp_id, resp_data);
+        let fb = FeedbackFrame::from_command(cmd);
+
+        if fb.motor_id != self.can_id {
+            anyhow::bail!(
+                "CAN response mismatch: expected motor {}, got motor {}",
+                self.can_id, fb.motor_id
+            );
+        }
+
+        let state = Self::parse_feedback(fb);
+        self.last_known_position = Some(state.angle_rad);
+        Ok(state)
+    }
+
     pub async fn read_param(&mut self, param: RobStride03Parameter) -> Result<f32> {
         let meta = param.metadata();
         let cmd = ReadCommand {
