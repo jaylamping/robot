@@ -11,6 +11,7 @@ import {
   useUpdateJointLimitsMutation,
   useUpdateJointHomeMutation,
   useMoveMotorMutation,
+  useZeroMotorMutation,
 } from '@/lib/mutations/robot'
 import { useTelemetryStore } from '@/stores/telemetry'
 import { PoseEditor } from '@/components/PoseEditor'
@@ -30,7 +31,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { LuPower, LuPowerOff, LuHouse, LuSettings, LuSave, LuCrosshair, LuChevronDown, LuChevronRight } from 'react-icons/lu'
+import { LuPower, LuPowerOff, LuHouse, LuSettings, LuSave, LuCrosshair, LuChevronDown, LuChevronRight, LuLocateFixed } from 'react-icons/lu'
 
 export const Route = createFileRoute('/arms')({
   component: ArmsPage,
@@ -173,16 +174,13 @@ function ArmPanel({ arm }: { arm: ArmInfo }) {
               disabled={busy}
               onConfirm={() => exec('Disable All', () => disableArmMut.mutateAsync(arm.side))}
             />
-            <Button
-              variant="outline"
-              size="sm"
+            <ConfirmAction
+              label={busy ? 'Homing...' : 'Home'}
+              icon={<LuHouse className="size-4" />}
+              description={`This will enable motors and move all ${arm.side} arm joints to their configured home positions. Ensure the arm is clear of obstacles and you can reach E-STOP.`}
               disabled={busy}
-              onClick={handleHome}
-              className="gap-1.5"
-            >
-              <LuHouse className="size-4" />
-              <span className="hidden sm:inline">{busy ? 'Homing...' : 'Home'}</span>
-            </Button>
+              onConfirm={handleHome}
+            />
           </div>
         </div>
       </CardHeader>
@@ -256,6 +254,7 @@ function JointSlider({
   const limitsMut = useUpdateJointLimitsMutation()
   const homeMut = useUpdateJointHomeMutation()
   const moveMut = useMoveMotorMutation()
+  const zeroMut = useZeroMotorMutation()
 
   const minDeg = (joint.limits[0] * 180) / Math.PI
   const maxDeg = (joint.limits[1] * 180) / Math.PI
@@ -384,6 +383,11 @@ function JointSlider({
   }
 
   const handleSetCurrentAsHome = async () => {
+    const posDeg = currentDeg != null ? currentDeg.toFixed(1) : '?'
+    if (!confirm(
+      `Set current position (${posDeg}°) as home for ${formatJointName(joint.name)}?\n\n` +
+      `This saves the motor's current encoder reading as the home target in robot.yaml.`
+    )) return
     setSaving(true)
     try {
       const res = await homeMut.mutateAsync({
@@ -400,6 +404,71 @@ function JointSlider({
       }
     } catch (e) {
       toast.error('Failed to set home', {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleZeroEncoder = async () => {
+    if (joint.can_id == null) return
+    if (!confirm(
+      `Zero encoder for ${formatJointName(joint.name)} (CAN ${joint.can_id})?\n\n` +
+      `This redefines the motor's current physical position as 0°. ` +
+      `All position commands and limits are relative to this zero point.\n\n` +
+      `Make sure the joint is at the position you want to be 0°.`
+    )) return
+    setSaving(true)
+    try {
+      const res = await zeroMut.mutateAsync(joint.can_id)
+      if (res.success) {
+        toast.success(`Encoder zeroed for ${formatJointName(joint.name)}`, {
+          description: 'Current physical position is now 0°',
+        })
+      } else {
+        toast.error('Zero failed', { description: res.error })
+      }
+    } catch (e) {
+      toast.error('Zero encoder failed', {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleZeroAndSetHome = async () => {
+    if (joint.can_id == null) return
+    if (!confirm(
+      `Zero encoder AND set home for ${formatJointName(joint.name)} (CAN ${joint.can_id})?\n\n` +
+      `This will:\n` +
+      `1. Redefine the motor's current physical position as 0°\n` +
+      `2. Save 0° as the home position in robot.yaml\n\n` +
+      `Make sure the joint is at the position you want to be both zero and home.`
+    )) return
+    setSaving(true)
+    try {
+      const zeroRes = await zeroMut.mutateAsync(joint.can_id)
+      if (!zeroRes.success) {
+        toast.error('Zero failed', { description: zeroRes.error })
+        setSaving(false)
+        return
+      }
+      const homeRes = await homeMut.mutateAsync({
+        section,
+        joint: joint.name,
+        homeRad: 0,
+      })
+      if (homeRes.success) {
+        toast.success(`${formatJointName(joint.name)}: zeroed & home set to 0°`, {
+          description: 'Current physical position is now 0° and saved as home',
+        })
+      } else {
+        toast.error('Home save failed after zero', { description: homeRes.error })
+      }
+    } catch (e) {
+      toast.error('Zero & set home failed', {
         description: e instanceof Error ? e.message : String(e),
       })
     } finally {
@@ -472,6 +541,44 @@ function JointSlider({
 
       {expanded && (
         <div className="ml-2 mt-2 p-3 rounded-md border bg-muted/20 space-y-3">
+          <div>
+            <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1">
+              <LuLocateFixed className="size-3" /> Encoder Zero
+            </h5>
+            <p className="text-[10px] text-muted-foreground mb-2">
+              Position the joint where you want 0° to be, then zero the encoder.
+              {currentDeg != null && (
+                <> Raw encoder reads <strong>{currentDeg.toFixed(1)}°</strong>.</>
+              )}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleZeroEncoder}
+                disabled={saving || !isOnline}
+                className="gap-1 h-7 text-xs"
+                title="Set the encoder's current position as 0 rad"
+              >
+                <LuLocateFixed className="size-3" />
+                Zero Encoder
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleZeroAndSetHome}
+                disabled={saving || !isOnline}
+                className="gap-1 h-7 text-xs"
+                title="Zero the encoder AND set home to 0° in one step"
+              >
+                <LuHouse className="size-3" />
+                Zero & Set Home
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
           <div>
             <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center gap-1">
               <LuSettings className="size-3" /> Joint Limits
