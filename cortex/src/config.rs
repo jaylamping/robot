@@ -135,7 +135,8 @@ fn default_stall_detection_min_linear_error_rad() -> f64 {
 }
 
 fn default_recovery_direct_command_within_rad() -> f64 {
-    0.18
+    // ~12.6° — covers common residual (~7°) when homing from negative angles; older 0.12 rad left a gap.
+    0.22
 }
 
 fn default_kp_settle() -> f32 {

@@ -58,6 +58,18 @@ fn step_delta_toward_home(
     }
 }
 
+/// Minimum linear |error| at which stall / resistance detection may run. Raised to at least
+/// approach handoff (when approach is on) and above `direct_within` so the final homing band
+/// never false-triggers (common ~0.12 rad YAML + ~7° residual from negative-angle homing).
+fn effective_stall_min_err(cfg: &StartupRecoveryConfig, direct_within_rad: f32) -> f32 {
+    const MARGIN_ABOVE_DIRECT: f32 = 0.02;
+    let mut m = cfg.stall_detection_min_linear_error_rad as f32;
+    if cfg.approach_enabled {
+        m = m.max(cfg.approach_handoff_rad as f32);
+    }
+    m.max(direct_within_rad + MARGIN_ABOVE_DIRECT)
+}
+
 pub struct MotorState {
     pub angle_rad: f32,
     pub velocity_rads: f32,
@@ -298,8 +310,10 @@ impl Motor {
     /// **gradual** steps. Settle and handoff use **linear** error so wrap‑around never pretends the
     /// joint reached home. Bounded joints (`joint_limits_rad: Some`) always step linearly; otherwise
     /// shortest arc may apply when linear error `> π` and `prefer_shortest_angle`.
-    /// Commands clamp to limits; inside `recovery_direct_command_within_rad`, gradual phase commands
-    /// home directly with soft gains (stiction).
+    /// Commands clamp to limits; when `approach_enabled`, the direct-command band is at least
+    /// `approach_handoff_rad` (so the post-approach error range never uses slow micro-steps). Otherwise
+    /// it is `recovery_direct_command_within_rad`. Inside that band, gradual phase commands home
+    /// directly with the settle ramp (soft → full gains).
     /// On stall (high torque, low velocity, and linear error not inside the near-goal floor): hold,
     /// **back off** for `resistance_backoff_ms`, then **continue** with `post_stall_motion_scale`
     /// applied to steps and gains for the rest of this recovery.
@@ -316,10 +330,16 @@ impl Motor {
         let pos0 = self.read_position().await?;
         let bounded_joint = joint_limits_rad.is_some();
         let use_short = cfg.prefer_shortest_angle;
-        let direct_within = cfg.recovery_direct_command_within_rad as f32;
         if linear_error(pos0, target_rad).abs() <= large_error_rad {
             return Ok(0);
         }
+
+        let direct_within_base = cfg.recovery_direct_command_within_rad as f32;
+        let direct_within = if cfg.approach_enabled {
+            direct_within_base.max(cfg.approach_handoff_rad as f32)
+        } else {
+            direct_within_base
+        };
 
         let settle_tolerance_rad = cfg.settle_tolerance_rad as f32;
         let max_step_rad = cfg.max_step_rad as f32;
@@ -334,7 +354,7 @@ impl Motor {
         let trip_vel = cfg.resistance_velocity_rads;
         let confirm = cfg.resistance_confirm_ticks.max(1);
         let backoff = Duration::from_millis(cfg.resistance_backoff_ms);
-        let stall_min_err = cfg.stall_detection_min_linear_error_rad as f32;
+        let stall_min_err = effective_stall_min_err(cfg, direct_within);
 
         let kp_settle = cfg.kp_settle;
         let kd_settle = cfg.kd_settle;
@@ -431,6 +451,10 @@ impl Motor {
             }
 
             let in_direct_zone = linear_mag <= direct_within;
+            if in_direct_zone {
+                // Full gains for commanding home; post-stall scale would otherwise drag out the last degrees.
+                motion_scale = 1.0;
+            }
             let cap = max_step_rad * motion_scale;
             let cmd_pos = if in_direct_zone {
                 clamp_cmd_to_limits(target_rad, joint_limits_rad)
@@ -795,14 +819,54 @@ mod recovery_homing_tests {
 
     #[test]
     fn direct_command_zone_uses_linear_error() {
-        let direct_within = StartupRecoveryConfig::default().recovery_direct_command_within_rad as f32;
+        let c = StartupRecoveryConfig::default();
+        let direct_within = if c.approach_enabled {
+            (c.recovery_direct_command_within_rad as f32).max(c.approach_handoff_rad as f32)
+        } else {
+            c.recovery_direct_command_within_rad as f32
+        };
         let pos = 0.10f32;
         let home = 0.0f32;
         let linear_mag = (home - pos).abs();
         assert!(linear_mag <= direct_within);
-        let pos2 = 0.25f32;
+        let pos2 = 0.35f32;
         let linear_mag2 = (home - pos2).abs();
         assert!(linear_mag2 > direct_within);
+    }
+
+    #[test]
+    fn direct_zone_covers_post_approach_band() {
+        let c = StartupRecoveryConfig::default();
+        assert!(c.approach_enabled);
+        let effective = (c.recovery_direct_command_within_rad as f32).max(c.approach_handoff_rad as f32);
+        let err_after_handoff = 0.25f32;
+        assert!(
+            err_after_handoff <= effective,
+            "error just inside handoff must use command-home + settle ramp, not micro-steps"
+        );
+    }
+
+    #[test]
+    fn seven_degree_residual_below_effective_stall_with_legacy_yaml() {
+        let mut c = StartupRecoveryConfig::default();
+        c.recovery_direct_command_within_rad = 0.12;
+        c.stall_detection_min_linear_error_rad = 0.26;
+        c.approach_handoff_rad = 0.28;
+        let direct_base = c.recovery_direct_command_within_rad as f32;
+        let direct = if c.approach_enabled {
+            direct_base.max(c.approach_handoff_rad as f32)
+        } else {
+            direct_base
+        };
+        let floor = super::effective_stall_min_err(&c, direct);
+        let residual = 7.3f32.to_radians();
+        assert!(
+            residual < floor,
+            "~7.3° hang was stall-eligible when floor {:.4} <= err {:.4}; floor is now {:.4}",
+            0.13f32,
+            residual,
+            floor
+        );
     }
 
     #[test]
