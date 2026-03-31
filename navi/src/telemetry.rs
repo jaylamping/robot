@@ -263,11 +263,16 @@ async fn build_live_snapshot(
     let joint_map = build_joint_name_map(state).await;
     let home_info = build_home_info(state).await;
 
-    let mut motors = Vec::new();
-    let mut motors_guard = state.motors.lock().await;
-    let motor_ids: Vec<u8> = motors_guard.keys().copied().collect();
+    // Clone Arcs from the map, then drop the map lock before doing CAN I/O.
+    let motor_arcs: Vec<(u8, std::sync::Arc<tokio::sync::Mutex<cortex::motor::Motor>>)> = {
+        let motors_guard = state.motors.lock().await;
+        motors_guard.iter().map(|(&id, m)| (id, m.clone())).collect()
+    };
 
-    for can_id in motor_ids {
+    let mut motors = Vec::new();
+
+    for (can_id, motor_arc) in &motor_arcs {
+        let can_id = *can_id;
         let joint_name = joint_map
             .get(&can_id)
             .cloned()
@@ -296,14 +301,12 @@ async fn build_live_snapshot(
             continue;
         }
 
-        let result = if let Some(motor) = motors_guard.get_mut(&can_id) {
-            Some(tokio::time::timeout(MOTOR_READ_TIMEOUT, motor.read_state_validated()).await)
-        } else {
-            None
-        };
+        let mut motor = motor_arc.lock().await;
+        let result = tokio::time::timeout(MOTOR_READ_TIMEOUT, motor.read_state_validated()).await;
+        drop(motor);
 
         match result {
-            Some(Ok(Ok(ms))) => {
+            Ok(Ok(ms)) => {
                 health.record_success(can_id);
                 let angle_joint =
                     canonical_joint_angle(ms.angle_rad, home_rad, limits.0, limits.1);
@@ -324,7 +327,7 @@ async fn build_live_snapshot(
                     limits: Some(limits),
                 });
             }
-            Some(Ok(Err(e))) => {
+            Ok(Err(e)) => {
                 health.record_failure(can_id);
                 let fails = health.consecutive_failures.get(&can_id).copied().unwrap_or(0);
                 warn!(can_id, error = %e, consecutive_failures = fails, "failed to read motor state");
@@ -344,7 +347,7 @@ async fn build_live_snapshot(
                     limits: Some(limits),
                 });
             }
-            Some(Err(_)) => {
+            Err(_) => {
                 health.record_failure(can_id);
                 let fails = health.consecutive_failures.get(&can_id).copied().unwrap_or(0);
                 warn!(can_id, consecutive_failures = fails, "motor read timed out");
@@ -364,27 +367,8 @@ async fn build_live_snapshot(
                     limits: Some(limits),
                 });
             }
-            None => {
-                motors.push(MotorSnapshot {
-                    can_id,
-                    joint_name,
-                    angle_rad: 0.0,
-                    velocity_rads: 0.0,
-                    torque_nm: 0.0,
-                    temperature_c: 0.0,
-                    mode: "Unknown".into(),
-                    faults: vec!["motor removed".into()],
-                    online: false,
-                    home_rad: Some(home_rad),
-                    home_error_rad: None,
-                    at_home: false,
-                    limits: Some(limits),
-                });
-            }
         }
     }
-
-    drop(motors_guard);
 
     TelemetrySnapshot {
         timestamp_ms,

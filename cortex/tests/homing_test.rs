@@ -1,5 +1,6 @@
 //! Homing / startup recovery tests using RS03 loopback simulation (no hardware).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use cortex::arm::{Arm, JointHomingStatus};
@@ -49,8 +50,18 @@ elbow_pitch:
 fn arm_with_initial_pitch(pos_rad: f32) -> Arm {
     let cfg: ArmConfig = serde_yaml::from_str(test_arm_yaml()).expect("parse test arm yaml");
     let transport = TransportType::LoopbackSim(LoopbackSimTransport::new(pos_rad));
-    let protocol = Protocol::new(transport, Arc::new(|_id: u32, _data: Vec<u8>| {}));
-    Arm::new(&cfg, Arc::new(Mutex::new(protocol)))
+    let protocol = Arc::new(Mutex::new(
+        Protocol::new(transport, Arc::new(|_id: u32, _data: Vec<u8>| {})),
+    ));
+
+    let mut motor = Motor::new(protocol, 8);
+    motor.set_joint_limits(-1.57, 3.14);
+    motor.set_home_rad(0.0);
+
+    let mut motors: HashMap<u8, Arc<Mutex<Motor>>> = HashMap::new();
+    motors.insert(8, Arc::new(Mutex::new(motor)));
+
+    Arm::new(&cfg, &motors)
 }
 
 fn shoulder_result(summary: &cortex::arm::StartupRecoverySummary) -> &cortex::arm::JointHomingResult {
@@ -63,7 +74,7 @@ fn shoulder_result(summary: &cortex::arm::StartupRecoverySummary) -> &cortex::ar
 
 #[tokio::test]
 async fn homing_from_60_deg_completes_without_stall_backoffs() {
-    let mut arm = arm_with_initial_pitch(60f32.to_radians());
+    let arm = arm_with_initial_pitch(60f32.to_radians());
     let summary = arm.startup_safe_recovery(false).await.expect("startup_safe_recovery");
     let j = shoulder_result(&summary);
 
@@ -96,7 +107,7 @@ async fn homing_from_60_deg_completes_without_stall_backoffs() {
 #[tokio::test]
 async fn homing_from_multiple_offsets_no_false_stalls() {
     for deg in [30.0f32, 60.0, 90.0] {
-        let mut arm = arm_with_initial_pitch(deg.to_radians());
+        let arm = arm_with_initial_pitch(deg.to_radians());
         let summary = arm.startup_safe_recovery(false).await.expect("home");
         assert_eq!(
             summary.stall_backoffs, 0,
@@ -114,7 +125,7 @@ async fn homing_from_multiple_offsets_no_false_stalls() {
 #[tokio::test]
 async fn homing_from_negative_angles_completes_without_stall_backoffs() {
     for deg in [-50.0f32, -35.0, -20.0] {
-        let mut arm = arm_with_initial_pitch(deg.to_radians());
+        let arm = arm_with_initial_pitch(deg.to_radians());
         let summary = arm.startup_safe_recovery(false).await.expect("home");
         assert_eq!(
             summary.stall_backoffs, 0,

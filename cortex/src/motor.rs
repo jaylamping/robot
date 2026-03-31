@@ -100,6 +100,13 @@ impl Motor {
         self.home_rad = home_rad;
     }
 
+    /// Reset the cached last_known_position to 0.
+    /// Call after zeroing the encoder via a different Motor instance on the same CAN bus,
+    /// so this Motor struct doesn't retain a stale pre-zero position.
+    pub fn last_known_position_reset(&mut self) {
+        self.last_known_position = Some(0.0);
+    }
+
     pub fn home_rad(&self) -> f32 {
         self.home_rad
     }
@@ -178,6 +185,7 @@ impl Motor {
         };
         let (id, data) = cmd.to_can_packet(self.can_id);
         self.send_and_recv(id, &data).await?;
+        self.last_known_position = Some(0.0);
         Ok(())
     }
 

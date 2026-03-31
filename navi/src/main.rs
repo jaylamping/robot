@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
         config.bus.transport, config.bus.port, config.bus.baud
     );
 
-    let mut motors: HashMap<u8, Motor> = HashMap::new();
+    let mut motors: HashMap<u8, Arc<Mutex<Motor>>> = HashMap::new();
     let mut arms: HashMap<String, Arm> = HashMap::new();
     let transport_type;
     let protocol_arc;
@@ -99,15 +99,15 @@ async fn main() -> Result<()> {
             if let Some(home) = safety::home_for_motor(&config, can_id) {
                 motor.set_home_rad(home);
             }
-            motors.insert(can_id, motor);
+            motors.insert(can_id, Arc::new(Mutex::new(motor)));
         }
         info!("{} motor(s) registered", motors.len());
 
         if let Some(ref arm_cfg) = config.arm_left {
-            arms.insert("left".into(), Arm::new(arm_cfg, protocol.clone()));
+            arms.insert("left".into(), Arm::new(arm_cfg, &motors));
         }
         if let Some(ref arm_cfg) = config.arm_right {
-            arms.insert("right".into(), Arm::new(arm_cfg, protocol.clone()));
+            arms.insert("right".into(), Arm::new(arm_cfg, &motors));
         }
         protocol_arc = Some(protocol);
     } else {
@@ -220,9 +220,12 @@ async fn shutdown_signal(state: Arc<AppState>) {
         .await
         .expect("failed to listen for ctrl-c");
     info!("Shutting down — disabling all motors...");
-    let mut motors = state.motors.lock().await;
-    for (id, motor) in motors.iter_mut() {
-        if let Err(e) = motor.disable().await {
+    let motor_arcs: Vec<(u8, Arc<Mutex<Motor>>)> = {
+        let motors = state.motors.lock().await;
+        motors.iter().map(|(&id, m)| (id, m.clone())).collect()
+    };
+    for (id, motor_arc) in motor_arcs {
+        if let Err(e) = motor_arc.lock().await.disable().await {
             tracing::warn!(can_id = id, error = %e, "failed to disable motor during shutdown");
         }
     }

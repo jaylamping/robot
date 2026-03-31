@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use cortex::config::RobotConfig;
-use cortex::motor::create_ch341_protocol;
+use cortex::motor::{create_ch341_protocol, Motor};
 use cortex::arm::Arm;
+use cortex::safety;
+use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +30,22 @@ async fn main() -> Result<()> {
         .collect::<Vec<_>>());
 
     let protocol = create_ch341_protocol(&config.bus.port).await?;
-    let mut arm = Arm::new(arm_config, protocol);
+
+    let mut motors: HashMap<u8, Arc<Mutex<Motor>>> = HashMap::new();
+    for (_, joint) in arm_config.joints() {
+        if let Some(can_id) = joint.can_id {
+            let mut motor = Motor::new(protocol.clone(), can_id);
+            if let Some((lo, hi)) = safety::limits_for_motor(&config, can_id) {
+                motor.set_joint_limits(lo, hi);
+            }
+            if let Some(home) = safety::home_for_motor(&config, can_id) {
+                motor.set_home_rad(home);
+            }
+            motors.insert(can_id, Arc::new(Mutex::new(motor)));
+        }
+    }
+
+    let arm = Arm::new(arm_config, &motors);
 
     let zeroed = arm.straight_down_home_before_enable().await?;
     if zeroed > 0 {
@@ -52,7 +71,7 @@ async fn main() -> Result<()> {
     }
     println!("Startup position check complete");
 
-    let result = wave_sequence(&mut arm, "shoulder_pitch").await;
+    let result = wave_sequence(&arm, "shoulder_pitch").await;
 
     println!("Disabling all joints...");
     arm.disable_all().await?;
@@ -60,7 +79,7 @@ async fn main() -> Result<()> {
     result
 }
 
-async fn wave_sequence(arm: &mut Arm, joint: &str) -> Result<()> {
+async fn wave_sequence(arm: &Arm, joint: &str) -> Result<()> {
     let home = arm
         .configured_home_rad(joint)
         .ok_or_else(|| anyhow::anyhow!("Joint '{}' not in arm or has no home", joint))?;

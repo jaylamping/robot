@@ -16,6 +16,8 @@ use cortex::safety;
 use crate::AppState;
 use crate::telemetry::build_joint_name_map;
 
+use tokio::sync::Mutex;
+
 #[derive(Serialize)]
 struct MotorInfo {
     can_id: u8,
@@ -344,17 +346,20 @@ async fn get_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
     let joint_map = build_joint_name_map(&state).await;
-
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
     let joint_name = joint_map
         .get(&id)
         .cloned()
         .unwrap_or_else(|| format!("motor_{}", id));
     let config = state.config.read().await;
     let (actuator_type, limits) = find_joint_config(&config, id);
+    drop(config);
 
+    let mut motor = motor_arc.lock().await;
     match motor.read_state().await {
         Ok(ms) => Ok(Json(MotorDetail {
             can_id: id,
@@ -389,8 +394,11 @@ async fn enable_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.enable().await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -413,8 +421,11 @@ async fn disable_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.disable().await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -437,24 +448,27 @@ async fn zero_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
-    match motor.set_zero().await {
-        Ok(()) => Ok(Json(CommandResponse {
-            success: true,
-            error: None,
-            angle_rad: None,
-            velocity_rads: None,
-            torque_nm: None,
-        })),
-        Err(e) => Ok(Json(CommandResponse {
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    if let Err(e) = motor_arc.lock().await.set_zero().await {
+        return Ok(Json(CommandResponse {
             success: false,
             error: Some(format!("{:#}", e)),
             angle_rad: None,
             velocity_rads: None,
             torque_nm: None,
-        })),
+        }));
     }
+
+    Ok(Json(CommandResponse {
+        success: true,
+        error: None,
+        angle_rad: None,
+        velocity_rads: None,
+        torque_nm: None,
+    }))
 }
 
 async fn move_motor(
@@ -465,8 +479,11 @@ async fn move_motor(
     if let Some(err) = check_motor_limits(&state, id, Some(req.position_rad)).await {
         return Ok(Json(err));
     }
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.move_to(req.position_rad, req.kp, req.kd).await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -493,8 +510,11 @@ async fn control_motor(
     if let Some(err) = check_motor_limits(&state, id, Some(req.position)).await {
         return Ok(Json(err));
     }
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor
         .send_control(req.position, req.velocity, req.kp, req.kd, req.torque)
         .await
@@ -518,7 +538,10 @@ async fn control_motor(
 
 async fn get_arms(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut result = Vec::new();
-    let motors = state.motors.lock().await;
+    let motor_ids: Vec<u8> = {
+        let motors = state.motors.lock().await;
+        motors.keys().copied().collect()
+    };
     let config = state.config.read().await;
 
     let arm_configs: Vec<(&str, &cortex::config::ArmConfig)> = [
@@ -532,7 +555,7 @@ async fn get_arms(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     for (side, arm_cfg) in arm_configs {
         let mut joints = Vec::new();
         for (name, joint) in arm_cfg.joints() {
-            let online = joint.can_id.map_or(false, |id| motors.contains_key(&id));
+            let online = joint.can_id.map_or(false, |id| motor_ids.contains(&id));
             joints.push(ArmJointInfo {
                 name: name.to_string(),
                 can_id: joint.can_id,
@@ -555,8 +578,8 @@ async fn enable_arm(
     State(state): State<Arc<AppState>>,
     Path(side): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
     match arm.enable_all().await {
         Ok(()) => Ok(Json(CommandResponse {
             success: true,
@@ -579,8 +602,8 @@ async fn disable_arm(
     State(state): State<Arc<AppState>>,
     Path(side): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
     match arm.disable_all().await {
         Ok(()) => Ok(Json(CommandResponse {
             success: true,
@@ -606,8 +629,8 @@ async fn home_arm(
 ) -> Result<impl IntoResponse, StatusCode> {
     let force = body.map_or(false, |b| b.override_preflight);
 
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
 
     if !force {
         match arm.preflight_check().await {
@@ -675,8 +698,8 @@ async fn preflight_arm(
     State(state): State<Arc<AppState>>,
     Path(side): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
     match arm.preflight_check().await {
         Ok(result) => Ok(Json(result).into_response()),
         Err(e) => Ok(Json(CommandResponse {
@@ -693,8 +716,8 @@ async fn home_status_arm(
     State(state): State<Arc<AppState>>,
     Path(side): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
     match arm.get_homing_status().await {
         Ok(statuses) => {
             let json: Vec<JointHomeStatusJson> = statuses.into_iter().map(|s| {
@@ -724,8 +747,8 @@ async fn set_arm_pose(
     Path(side): Path<String>,
     Json(req): Json<PoseRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut arms = state.arms.lock().await;
-    let arm = arms.get_mut(&side).ok_or(StatusCode::NOT_FOUND)?;
+    let arms = state.arms.lock().await;
+    let arm = arms.get(&side).ok_or(StatusCode::NOT_FOUND)?;
     let kp = req.kp;
     let kd = req.kd;
     for (joint_name, position_rad) in &req.joints {
@@ -753,13 +776,11 @@ async fn spin_motor(
     Path(id): Path<u8>,
     Json(req): Json<SpinRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
-
-    // Motor::spin() now handles all limit enforcement internally:
-    // reads position, maps to canonical joint-space, validates/scales velocity.
-    // Commissioning mode only skips the API-level soft-margin pre-rejection;
-    // the motor-level hard limits always apply.
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.spin(req.velocity_rads, req.kd).await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -783,10 +804,11 @@ async fn torque_motor(
     Path(id): Path<u8>,
     Json(req): Json<TorqueRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
-
-    // Motor::set_torque() now handles all limit enforcement internally.
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.set_torque(req.torque_nm).await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -810,8 +832,11 @@ async fn jog_motor(
     Path(id): Path<u8>,
     Json(req): Json<JogRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.read_position().await {
         Ok(raw_pos) => {
             let canonical = safety::canonical_position_for_limits(
@@ -874,8 +899,11 @@ async fn stop_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut motors = state.motors.lock().await;
-    let motor = motors.get_mut(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        motors.get(&id).cloned().ok_or(StatusCode::NOT_FOUND)?
+    };
+    let mut motor = motor_arc.lock().await;
     match motor.disable().await {
         Ok(ms) => Ok(Json(CommandResponse {
             success: true,
@@ -897,10 +925,13 @@ async fn stop_motor(
 async fn estop_all(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let mut motors = state.motors.lock().await;
+    let motor_arcs: Vec<(u8, Arc<Mutex<Motor>>)> = {
+        let motors = state.motors.lock().await;
+        motors.iter().map(|(&id, m)| (id, m.clone())).collect()
+    };
     let mut errors = Vec::new();
-    for (id, motor) in motors.iter_mut() {
-        if let Err(e) = motor.disable().await {
+    for (id, motor_arc) in &motor_arcs {
+        if let Err(e) = motor_arc.lock().await.disable().await {
             errors.push(format!("motor {}: {:#}", id, e));
         }
     }
@@ -946,9 +977,9 @@ async fn run_sequence(
 ) -> Result<impl IntoResponse, StatusCode> {
     match name.as_str() {
         "home_all" => {
-            let mut arms = state.arms.lock().await;
+            let arms = state.arms.lock().await;
             let mut errors = Vec::new();
-            for (side, arm) in arms.iter_mut() {
+            for (side, arm) in arms.iter() {
                 if let Err(e) = arm.startup_safe_recovery(false).await {
                     errors.push(format!("{} arm: {:#}", side, e));
                 }
@@ -1021,15 +1052,15 @@ async fn discover_motors(
                         motor.set_home_rad(home);
                     }
                     drop(config);
-                    motors.insert(can_id, motor);
+                    motors.insert(can_id, Arc::new(Mutex::new(motor)));
                     discovered.push(can_id);
                 }
             }
             _ => {
                 if motors.contains_key(&can_id) {
                     info!(can_id, "discover: motor no longer responding, removing");
-                    if let Some(mut motor) = motors.remove(&can_id) {
-                        let _ = motor.disable().await;
+                    if let Some(motor_arc) = motors.remove(&can_id) {
+                        let _ = motor_arc.lock().await.disable().await;
                     }
                     removed.push(can_id);
                 }
@@ -1227,6 +1258,11 @@ async fn update_joint_limits(
         }
     }
 
+    let can_id = {
+        let config = state.config.read().await;
+        can_id_for_joint(&config, &section, &joint)
+    };
+
     {
         let mut arms = state.arms.lock().await;
         let side = match section.as_str() {
@@ -1235,7 +1271,16 @@ async fn update_joint_limits(
             _ => "",
         };
         if let Some(arm) = arms.get_mut(side) {
-            arm.update_joint_limits(&joint, req.min_rad as f32, req.max_rad as f32);
+            arm.update_joint_limits(&joint, req.min_rad as f32, req.max_rad as f32).await;
+        } else if let Some(id) = can_id {
+            // Waist or other non-arm joints: update the shared motor directly
+            let motor_arc = {
+                let motors = state.motors.lock().await;
+                motors.get(&id).cloned()
+            };
+            if let Some(motor_arc) = motor_arc {
+                motor_arc.lock().await.set_joint_limits(req.min_rad as f32, req.max_rad as f32);
+            }
         }
     }
 
@@ -1256,13 +1301,13 @@ async fn update_joint_home(
     Json(req): Json<UpdateHomeRequest>,
 ) -> impl IntoResponse {
     let new_home = if req.set_current {
-        let mut arms = state.arms.lock().await;
+        let arms = state.arms.lock().await;
         let side = match section.as_str() {
             "arm_left" => "left",
             "arm_right" => "right",
             _ => "",
         };
-        let arm = match arms.get_mut(side) {
+        let arm = match arms.get(side) {
             Some(a) => a,
             None => return Json(CommandResponse {
                 success: false,
@@ -1369,6 +1414,11 @@ async fn update_joint_home(
         }
     }
 
+    let can_id = {
+        let config = state.config.read().await;
+        can_id_for_joint(&config, &section, &joint)
+    };
+
     {
         let mut arms = state.arms.lock().await;
         let side = match section.as_str() {
@@ -1377,7 +1427,16 @@ async fn update_joint_home(
             _ => "",
         };
         if let Some(arm) = arms.get_mut(side) {
-            arm.update_joint_home(&joint, new_home as f32);
+            arm.update_joint_home(&joint, new_home as f32).await;
+        } else if let Some(id) = can_id {
+            // Waist or other non-arm joints: update the shared motor directly
+            let motor_arc = {
+                let motors = state.motors.lock().await;
+                motors.get(&id).cloned()
+            };
+            if let Some(motor_arc) = motor_arc {
+                motor_arc.lock().await.set_home_rad(new_home as f32);
+            }
         }
     }
 
@@ -1393,6 +1452,26 @@ async fn update_joint_home(
 }
 
 // -- Helpers --
+
+/// Look up the CAN ID for a section+joint from the config.
+fn can_id_for_joint(config: &cortex::config::RobotConfig, section: &str, joint: &str) -> Option<u8> {
+    match section {
+        "arm_left" => config.arm_left.as_ref().and_then(|arm| {
+            arm.joints().into_iter()
+                .find(|(n, _)| *n == joint)
+                .and_then(|(_, j)| j.can_id)
+        }),
+        "arm_right" => config.arm_right.as_ref().and_then(|arm| {
+            arm.joints().into_iter()
+                .find(|(n, _)| *n == joint)
+                .and_then(|(_, j)| j.can_id)
+        }),
+        "waist" => config.waist.as_ref().and_then(|w| {
+            w.get(joint).and_then(|j| j.can_id)
+        }),
+        _ => None,
+    }
+}
 
 /// API-level limit check. Returns Some(error response) if position violates limits.
 async fn check_motor_limits(
@@ -1450,7 +1529,7 @@ fn find_joint_config(config: &cortex::config::RobotConfig, can_id: u8) -> (Strin
 
 fn collect_configured_motors(
     config: &cortex::config::RobotConfig,
-    motors: &std::collections::HashMap<u8, cortex::motor::Motor>,
+    motors: &std::collections::HashMap<u8, Arc<Mutex<cortex::motor::Motor>>>,
     joint_map: &std::collections::HashMap<u8, String>,
     infos: &mut Vec<MotorInfo>,
 ) {

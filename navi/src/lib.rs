@@ -20,10 +20,12 @@ use robstride::Protocol;
 use crate::log_buffer::LogBuffer;
 use crate::telemetry::TelemetrySnapshot;
 
+pub type SharedMotor = Arc<Mutex<Motor>>;
+
 pub struct AppState {
     pub config: RwLock<RobotConfig>,
     pub config_path: String,
-    pub motors: Mutex<HashMap<u8, Motor>>,
+    pub motors: Mutex<HashMap<u8, SharedMotor>>,
     pub arms: Mutex<HashMap<String, Arm>>,
     pub protocol: Option<Arc<Mutex<Protocol>>>,
     pub telemetry_tx: broadcast::Sender<TelemetrySnapshot>,

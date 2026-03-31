@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use robstride::Protocol;
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -114,7 +114,7 @@ struct JointStartupParams {
 /// Ordered joint entry preserving YAML field order (shoulder_pitch first, elbow_pitch last).
 struct OrderedJoint {
     name: String,
-    motor: Motor,
+    motor: Arc<Mutex<Motor>>,
 }
 
 pub struct Arm {
@@ -123,12 +123,26 @@ pub struct Arm {
 }
 
 impl Arm {
-    pub fn new(config: &ArmConfig, protocol: Arc<Mutex<Protocol>>) -> Self {
+    /// Build an Arm from config, looking up shared Motor instances by CAN ID.
+    /// Motors must already exist in the provided map (created once at startup).
+    pub fn new(config: &ArmConfig, motors: &HashMap<u8, Arc<Mutex<Motor>>>) -> Self {
         let mut joints = Vec::new();
         let mut joint_startup = Vec::new();
 
         for (name, joint) in config.joints() {
             if let Some(can_id) = joint.can_id {
+                let shared_motor = match motors.get(&can_id) {
+                    Some(m) => m.clone(),
+                    None => {
+                        warn!(
+                            joint = name,
+                            can_id,
+                            "skipping joint: no Motor found in shared map for CAN ID"
+                        );
+                        continue;
+                    }
+                };
+
                 let straight_down = joint.straight_down_home_at_startup;
                 let home_rad = if straight_down {
                     if joint.home_rad.abs() > 1e-9 {
@@ -143,10 +157,6 @@ impl Arm {
                     joint.home_rad as f32
                 };
 
-                let mut motor = Motor::new(protocol.clone(), can_id);
-                motor.set_joint_limits(joint.limits.0 as f32, joint.limits.1 as f32);
-                motor.set_home_rad(home_rad);
-
                 joint_startup.push((
                     name.to_string(),
                     JointStartupParams {
@@ -159,7 +169,7 @@ impl Arm {
                 ));
                 joints.push(OrderedJoint {
                     name: name.to_string(),
-                    motor,
+                    motor: shared_motor,
                 });
             }
         }
@@ -170,19 +180,19 @@ impl Arm {
         }
     }
 
-    fn find_motor_mut(&mut self, name: &str) -> Option<&mut Motor> {
-        self.joints.iter_mut().find(|j| j.name == name).map(|j| &mut j.motor)
+    fn find_motor(&self, name: &str) -> Option<&Arc<Mutex<Motor>>> {
+        self.joints.iter().find(|j| j.name == name).map(|j| &j.motor)
     }
 
     // -- Pre-flight --
 
     /// Read every joint's encoder position (without enabling) and check against limits.
     /// Returns `pass: false` if any joint is outside its configured range.
-    pub async fn preflight_check(&mut self) -> Result<PreflightResult> {
+    pub async fn preflight_check(&self) -> Result<PreflightResult> {
         let mut joints_result = Vec::new();
         let mut pass = true;
 
-        for oj in &mut self.joints {
+        for oj in &self.joints {
             let params = self.joint_startup.iter()
                 .find(|(n, _)| n == &oj.name)
                 .map(|(_, p)| p);
@@ -191,7 +201,7 @@ impl Arm {
                 None => continue,
             };
 
-            let pos = match oj.motor.read_position().await {
+            let pos = match oj.motor.lock().await.read_position().await {
                 Ok(p) => p,
                 Err(_) => {
                     joints_result.push(PreflightJoint {
@@ -292,7 +302,7 @@ impl Arm {
     ///
     /// Joints are homed in YAML field order (shoulder_pitch first, elbow_pitch last).
     /// Each joint is enabled with a gravity-catch hold before recovery begins.
-    pub async fn startup_safe_recovery(&mut self, force: bool) -> Result<StartupRecoverySummary> {
+    pub async fn startup_safe_recovery(&self, force: bool) -> Result<StartupRecoverySummary> {
         use std::f32::consts::TAU;
 
         let preflight = self.preflight_check().await?;
@@ -314,9 +324,8 @@ impl Arm {
         let mut total_stall_backoffs = 0u32;
         let mut joint_results = Vec::new();
 
-        let joint_names: Vec<String> = self.joints.iter().map(|j| j.name.clone()).collect();
-
-        for name in &joint_names {
+        for oj in &self.joints {
+            let name = &oj.name;
             let params = self.joint_startup.iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, p)| p)
@@ -325,10 +334,7 @@ impl Arm {
             let mut home = params.home_rad;
             let limits = (params.limit_min_rad, params.limit_max_rad);
 
-            let motor = self.joints.iter_mut()
-                .find(|j| &j.name == name)
-                .map(|j| &mut j.motor)
-                .unwrap();
+            let mut motor = oj.motor.lock().await;
 
             let joint_start = Instant::now();
 
@@ -561,13 +567,13 @@ impl Arm {
 
     // -- Home status (read-only) --
 
-    pub async fn get_homing_status(&mut self) -> Result<Vec<JointHomeStatus>> {
+    pub async fn get_homing_status(&self) -> Result<Vec<JointHomeStatus>> {
         let settle = self.joint_startup.first()
             .map(|(_, p)| p.recovery.settle_tolerance_rad as f32)
             .unwrap_or(0.03);
 
         let mut statuses = Vec::new();
-        for oj in &mut self.joints {
+        for oj in &self.joints {
             let params = self.joint_startup.iter()
                 .find(|(n, _)| n == &oj.name)
                 .map(|(_, p)| p);
@@ -576,7 +582,7 @@ impl Arm {
                 None => continue,
             };
 
-            let pos = oj.motor.read_position().await.unwrap_or(0.0);
+            let pos = oj.motor.lock().await.read_position().await.unwrap_or(0.0);
             let lim = (params.limit_min_rad, params.limit_max_rad);
             let pos_joint = canonical_joint_angle(pos, params.home_rad, lim.0, lim.1);
             let err = joint_space_error_mag(pos, params.home_rad, lim);
@@ -595,61 +601,59 @@ impl Arm {
     // -- Existing public API (adapted to ordered storage) --
 
     /// Call **before** homing for any joint with `straight_down_home_at_startup: true`.
-    pub async fn straight_down_home_before_enable(&mut self) -> Result<usize> {
+    pub async fn straight_down_home_before_enable(&self) -> Result<usize> {
         let mut n = 0usize;
-        let names: Vec<String> = self.joints.iter().map(|j| j.name.clone()).collect();
-        for name in &names {
+        for oj in &self.joints {
             let params = self.joint_startup.iter()
-                .find(|(n, _)| n == name)
+                .find(|(nm, _)| nm == &oj.name)
                 .map(|(_, p)| p)
-                .ok_or_else(|| anyhow::anyhow!("internal: joint '{}' has no startup params", name))?;
+                .ok_or_else(|| anyhow::anyhow!("internal: joint '{}' has no startup params", oj.name))?;
             if !params.straight_down_home_at_startup {
                 continue;
             }
-            let motor = self.find_motor_mut(name).unwrap();
             info!(
-                joint = %name,
+                joint = %oj.name,
                 "SetZero -- joint must be straight down; defining mech position 0 as home"
             );
-            motor.set_zero().await?;
+            oj.motor.lock().await.set_zero().await?;
             n += 1;
         }
         Ok(n)
     }
 
-    pub async fn enable_all(&mut self) -> Result<()> {
-        for oj in &mut self.joints {
+    pub async fn enable_all(&self) -> Result<()> {
+        for oj in &self.joints {
             info!("Enabling {}", oj.name);
-            oj.motor.enable().await?;
+            oj.motor.lock().await.enable().await?;
         }
         Ok(())
     }
 
-    pub async fn disable_all(&mut self) -> Result<()> {
-        for oj in &mut self.joints {
+    pub async fn disable_all(&self) -> Result<()> {
+        for oj in &self.joints {
             info!("Disabling {}", oj.name);
-            let _ = oj.motor.disable().await;
+            let _ = oj.motor.lock().await.disable().await;
         }
         Ok(())
     }
 
     pub async fn set_joint(
-        &mut self,
+        &self,
         joint_name: &str,
         position_rad: f32,
         kp: Option<f32>,
         kd: Option<f32>,
     ) -> Result<()> {
-        let motor = self.find_motor_mut(joint_name)
+        let motor = self.find_motor(joint_name)
             .ok_or_else(|| anyhow::anyhow!("Joint '{}' not configured", joint_name))?;
-        motor.move_to(position_rad, kp, kd).await?;
+        motor.lock().await.move_to(position_rad, kp, kd).await?;
         Ok(())
     }
 
-    pub async fn get_joint_positions(&mut self) -> Result<Vec<(String, f32)>> {
+    pub async fn get_joint_positions(&self) -> Result<Vec<(String, f32)>> {
         let mut positions = Vec::new();
-        for oj in &mut self.joints {
-            let pos = oj.motor.read_position().await?;
+        for oj in &self.joints {
+            let pos = oj.motor.lock().await.read_position().await?;
             positions.push((oj.name.clone(), pos));
         }
         Ok(positions)
@@ -667,7 +671,7 @@ impl Arm {
         self.joint_startup.iter().find(|(n, _)| n == name).map(|(_, p)| p)
     }
 
-    pub fn update_joint_limits(&mut self, joint_name: &str, min_rad: f32, max_rad: f32) -> bool {
+    pub async fn update_joint_limits(&mut self, joint_name: &str, min_rad: f32, max_rad: f32) -> bool {
         let mut updated = false;
         for (n, p) in &mut self.joint_startup {
             if n == joint_name {
@@ -678,14 +682,14 @@ impl Arm {
             }
         }
         if updated {
-            if let Some(motor) = self.find_motor_mut(joint_name) {
-                motor.set_joint_limits(min_rad, max_rad);
+            if let Some(motor_arc) = self.find_motor(joint_name) {
+                motor_arc.lock().await.set_joint_limits(min_rad, max_rad);
             }
         }
         updated
     }
 
-    pub fn update_joint_home(&mut self, joint_name: &str, home_rad: f32) -> bool {
+    pub async fn update_joint_home(&mut self, joint_name: &str, home_rad: f32) -> bool {
         let mut updated = false;
         for (n, p) in &mut self.joint_startup {
             if n == joint_name {
@@ -695,15 +699,10 @@ impl Arm {
             }
         }
         if updated {
-            if let Some(motor) = self.find_motor_mut(joint_name) {
-                motor.set_home_rad(home_rad);
+            if let Some(motor_arc) = self.find_motor(joint_name) {
+                motor_arc.lock().await.set_home_rad(home_rad);
             }
         }
         updated
-    }
-
-    /// Get motor by CAN ID (for API-level motor commands).
-    pub fn motor_by_can_id(&mut self, can_id: u8) -> Option<&mut Motor> {
-        self.joints.iter_mut().find(|j| j.motor.can_id == can_id).map(|j| &mut j.motor)
     }
 }
