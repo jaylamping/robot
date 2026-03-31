@@ -1,8 +1,8 @@
 use cortex::config::{BusConfig, RobotConfig};
 use cortex::safety::{
-    canonical_joint_angle, canonical_position_for_limits, is_within_limits, limits_for_motor,
-    shortest_angle_err, soft_limit_effort_scale, step_delta_toward_home,
-    validate_velocity_command, JOINT_UNWRAP_EPS,
+    JOINT_UNWRAP_EPS, canonical_joint_angle, canonical_position_for_limits, is_within_limits,
+    limits_for_motor, shortest_angle_err, soft_limit_effort_scale, step_delta_toward_home,
+    validate_velocity_command,
 };
 use std::f32::consts::{PI, TAU};
 
@@ -25,7 +25,10 @@ fn canonical_maps_wrong_branch() {
     let physical = -0.52_f32;
     let raw = physical + TAU;
     let cj = canonical_joint_angle(raw, home, lo, hi);
-    assert!((cj - physical).abs() < 0.06, "expected ~{physical}, got {cj}");
+    assert!(
+        (cj - physical).abs() < 0.06,
+        "expected ~{physical}, got {cj}"
+    );
 }
 
 #[test]
@@ -82,7 +85,10 @@ fn validate_velocity_rejects_outside_limits_wrong_direction() {
 #[test]
 fn validate_velocity_allows_return_to_range() {
     let result = validate_velocity_command(1.5, 0.0, Some((-1.309, 1.309)), 0.175, -2.0);
-    assert!(result.is_ok(), "should allow negative velocity to return to range");
+    assert!(
+        result.is_ok(),
+        "should allow negative velocity to return to range"
+    );
 }
 
 #[test]
@@ -97,7 +103,10 @@ fn validate_velocity_scales_near_limit() {
 #[test]
 fn validate_velocity_multiturn_maps_correctly() {
     let result = validate_velocity_command(18.85, 0.0, Some((-1.309, 1.309)), 0.175, 1.0);
-    assert!(result.is_ok(), "multi-turn canonical should be within limits");
+    assert!(
+        result.is_ok(),
+        "multi-turn canonical should be within limits"
+    );
 }
 
 #[test]

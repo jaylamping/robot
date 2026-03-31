@@ -7,7 +7,12 @@ use cortex::arm::Arm;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,cortex=debug".parse().unwrap()),
+        )
+        .init();
 
     let config = RobotConfig::load("config/robot.yaml")?;
     let arm_config = config.arm_left

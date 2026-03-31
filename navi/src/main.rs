@@ -65,7 +65,10 @@ async fn main() -> Result<()> {
         .expect("failed to install rustls crypto provider");
 
     let log_buffer = LogBuffer::new();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,navi=debug,cortex=debug".parse().unwrap());
     tracing_subscriber::registry()
+        .with(env_filter)
         .with(tracing_subscriber::fmt::layer())
         .with(log_buffer.clone())
         .init();
