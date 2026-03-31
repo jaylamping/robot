@@ -726,6 +726,9 @@ impl Arm {
 /// Run one continuous sweep pass (current → min → max) using a pre-extracted motor arc.
 /// Does not hold any `Arm` or `AppState` lock during execution.
 /// Returns `true` if the cancellation token fired during the pass.
+///
+/// Bootstraps the current position from the first `send_control` response so no
+/// separate `read_position` CAN frame is needed (avoiding contention with telemetry).
 pub async fn sweep_pass(
     motor: &Arc<Mutex<Motor>>,
     min: f32,
@@ -734,7 +737,10 @@ pub async fn sweep_pass(
     step_delay_ms: u64,
     cancel: &CancellationToken,
 ) -> Result<bool> {
-    let mut current = motor.lock().await.read_position().await?;
+    // Send a gentle hold at min to bootstrap position — send_control returns
+    // the actual encoder angle in its feedback frame, no extra read needed.
+    let bootstrap = motor.lock().await.send_control(min, 0.0, 5.0, 0.5, 0.0).await?;
+    let mut current = bootstrap.angle_rad;
 
     for &target in &[min, max] {
         loop {
@@ -764,7 +770,9 @@ pub async fn sweep_home(
     step_rad: f32,
     step_delay_ms: u64,
 ) -> Result<()> {
-    let mut current = motor.lock().await.read_position().await?;
+    // Bootstrap current position from a gentle hold command.
+    let bootstrap = motor.lock().await.send_control(home, 0.0, 5.0, 0.5, 0.0).await?;
+    let mut current = bootstrap.angle_rad;
 
     loop {
         let err = home - current;
