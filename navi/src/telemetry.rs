@@ -6,6 +6,8 @@ use serde::Serialize;
 use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tracing::{debug, info, warn};
 
+use cortex::motor::{canonical_joint_angle, joint_space_error_mag};
+
 use crate::AppState;
 
 /// Single-motor `read_state` budget per telemetry tick. USB/CAN round-trips often exceed 100ms
@@ -183,14 +185,15 @@ async fn build_mock_snapshot(
     let mut motors = Vec::new();
 
     for (&can_id, joint_name) in &joint_map {
-        let (home_rad, limits, _settle) = home_info.get(&can_id)
+        let (home_rad, limits, settle) = home_info.get(&can_id)
             .copied()
             .unwrap_or((0.0, (-12.57, 12.57), 0.03));
 
+        let he = joint_space_error_mag(0.0, home_rad, limits);
         motors.push(MotorSnapshot {
             can_id,
             joint_name: joint_name.clone(),
-            angle_rad: 0.0,
+            angle_rad: canonical_joint_angle(0.0, home_rad, limits.0, limits.1),
             velocity_rads: 0.0,
             torque_nm: 0.0,
             temperature_c: 25.0,
@@ -198,8 +201,8 @@ async fn build_mock_snapshot(
             faults: vec![],
             online: true,
             home_rad: Some(home_rad),
-            home_error_rad: Some(home_rad.abs()),
-            at_home: home_rad.abs() <= 0.03,
+            home_error_rad: Some(he),
+            at_home: he <= settle,
             limits: Some(limits),
         });
     }
@@ -302,11 +305,13 @@ async fn build_live_snapshot(
         match result {
             Some(Ok(Ok(ms))) => {
                 health.record_success(can_id);
-                let home_err = (ms.angle_rad - home_rad).abs();
+                let angle_joint =
+                    canonical_joint_angle(ms.angle_rad, home_rad, limits.0, limits.1);
+                let home_err = joint_space_error_mag(ms.angle_rad, home_rad, limits);
                 motors.push(MotorSnapshot {
                     can_id,
                     joint_name,
-                    angle_rad: ms.angle_rad,
+                    angle_rad: angle_joint,
                     velocity_rads: ms.velocity_rads,
                     torque_nm: ms.torque_nm,
                     temperature_c: ms.temperature_c,

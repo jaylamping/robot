@@ -8,7 +8,9 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::config::{ArmConfig, StartupRecoveryConfig};
-use crate::motor::Motor;
+use crate::motor::{
+    canonical_joint_angle, joint_space_error_mag, motor_cmd_for_joint_target, Motor,
+};
 
 // -- Homing result types --
 
@@ -206,13 +208,19 @@ impl Arm {
                 }
             };
 
-            let pos_deg = pos.to_degrees();
+            let pos_joint = canonical_joint_angle(
+                pos,
+                params.home_rad,
+                params.limit_min_rad,
+                params.limit_max_rad,
+            );
+            let pos_deg = pos_joint.to_degrees();
             let mut violation = None;
 
             let is_multiturn = pos.abs() > std::f32::consts::TAU;
 
-            if pos < params.limit_min_rad {
-                let exceeded = params.limit_min_rad - pos;
+            if pos_joint < params.limit_min_rad {
+                let exceeded = params.limit_min_rad - pos_joint;
                 pass = false;
                 let suggested_fix = if is_multiturn {
                     format!(
@@ -233,8 +241,8 @@ impl Arm {
                     suggested_fix,
                     multiturn: is_multiturn,
                 });
-            } else if pos > params.limit_max_rad {
-                let exceeded = pos - params.limit_max_rad;
+            } else if pos_joint > params.limit_max_rad {
+                let exceeded = pos_joint - params.limit_max_rad;
                 pass = false;
                 let suggested_fix = if is_multiturn {
                     format!(
@@ -259,7 +267,7 @@ impl Arm {
 
             joints_result.push(PreflightJoint {
                 joint_name: oj.name.clone(),
-                current_rad: pos,
+                current_rad: pos_joint,
                 current_deg: pos_deg,
                 limit_min_rad: params.limit_min_rad,
                 limit_max_rad: params.limit_max_rad,
@@ -351,7 +359,7 @@ impl Arm {
             let settle = r.settle_tolerance_rad as f32;
             let large = r.large_error_rad as f32;
             let pos = motor.read_position().await?;
-            let err_mag = (pos - home).abs();
+            let err_mag = joint_space_error_mag(pos, home, limits);
 
             if err_mag <= settle {
                 joint_results.push(JointHomingResult {
@@ -408,12 +416,14 @@ impl Arm {
                 );
 
                 let mut final_tick = 0u32;
+                let mut cur = motor.read_position().await.unwrap_or(pos);
                 for tick in 0..ramp_ticks + 40 {
                     final_tick = tick;
                     let t = ((tick + 1) as f32 / ramp_ticks as f32).min(1.0);
                     let kp = hold_kp + (kp_target - hold_kp) * t;
                     let kd = hold_kd + (kd_target - hold_kd) * t;
-                    let state = motor.send_control(home, 0.0, kp, kd, 0.0).await?;
+                    let cmd = motor_cmd_for_joint_target(cur, home, limits);
+                    let state = motor.send_control(cmd, 0.0, kp, kd, 0.0).await?;
 
                     if tick % 10 == 0 || tick == ramp_ticks {
                         info!(
@@ -426,11 +436,12 @@ impl Arm {
                         );
                     }
 
-                    let cur = motor.read_position().await?;
-                    if (cur - home).abs() <= settle {
+                    cur = motor.read_position().await.unwrap_or(cur);
+                    let err_j = joint_space_error_mag(cur, home, limits);
+                    if err_j <= settle {
                         info!(
                             joint = %name,
-                            final_err_deg = format_args!("{:.2}", (cur - home).abs().to_degrees()),
+                            final_err_deg = format_args!("{:.2}", err_j.to_degrees()),
                             ticks = tick,
                             "near-home ramp: settled"
                         );
@@ -439,7 +450,7 @@ impl Arm {
                     if t_start.elapsed() >= timeout {
                         info!(
                             joint = %name,
-                            err_deg = format_args!("{:.2}", (cur - home).abs().to_degrees()),
+                            err_deg = format_args!("{:.2}", err_j.to_degrees()),
                             "near-home ramp: timeout"
                         );
                         break;
@@ -448,7 +459,7 @@ impl Arm {
                 }
 
                 let end_pos = motor.read_position().await.unwrap_or(pos);
-                let final_err = (end_pos - home).abs();
+                let final_err = joint_space_error_mag(end_pos, home, limits);
                 info!(
                     joint = %name,
                     final_err_deg = format_args!("{:.2}", final_err.to_degrees()),
@@ -501,7 +512,7 @@ impl Arm {
                 Ok(stalls) => {
                     total_stall_backoffs += stalls;
                     let end_pos = motor.read_position().await.unwrap_or(pos);
-                    let final_err = (end_pos - home).abs();
+                    let final_err = joint_space_error_mag(end_pos, home, limits);
                     let status = if stalls > 0 {
                         JointHomingStatus::StalledButHomed
                     } else {
@@ -532,7 +543,7 @@ impl Arm {
                         start_position_rad: start_pos,
                         end_position_rad: end_pos,
                         home_target_rad: home,
-                        error_rad: (end_pos - home).abs(),
+                        error_rad: joint_space_error_mag(end_pos, home, limits),
                         stall_backoffs: 0,
                         duration_ms: joint_start.elapsed().as_millis() as u64,
                     });
@@ -564,11 +575,13 @@ impl Arm {
             };
 
             let pos = oj.motor.read_position().await.unwrap_or(0.0);
-            let err = (pos - params.home_rad).abs();
+            let lim = (params.limit_min_rad, params.limit_max_rad);
+            let pos_joint = canonical_joint_angle(pos, params.home_rad, lim.0, lim.1);
+            let err = joint_space_error_mag(pos, params.home_rad, lim);
             statuses.push(JointHomeStatus {
                 joint_name: oj.name.clone(),
                 home_rad: params.home_rad,
-                current_rad: pos,
+                current_rad: pos_joint,
                 error_rad: err,
                 at_home: err <= settle,
                 limits: (params.limit_min_rad, params.limit_max_rad),

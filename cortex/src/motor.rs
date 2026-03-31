@@ -28,6 +28,52 @@ pub fn shortest_angle_err(from_rad: f32, to_rad: f32) -> f32 {
     (d + PI).rem_euclid(TAU) - PI
 }
 
+/// Epsilon (rad) when testing whether a candidate `pos + n·2π` lies inside joint limits.
+const JOINT_UNWRAP_EPS: f32 = 0.12;
+
+/// Pick the representative of `pos_rad` modulo 2π that lies in `[limit_lo, limit_hi]` (with slack).
+/// If several candidates fit (range > 2π), choose the one closest to `home_rad`.
+///
+/// After power loss the RS03 may report the same physical pose on a different 2π branch than
+/// `home_rad` / limits (e.g. ~330° linear error vs ~30° real). This maps the raw reading into the
+/// joint configuration frame.
+pub fn canonical_joint_angle(
+    pos_rad: f32,
+    home_rad: f32,
+    limit_lo: f32,
+    limit_hi: f32,
+) -> f32 {
+    use std::f32::consts::TAU;
+    let mut best: Option<(f32, f32)> = None;
+    for k in -4..=4 {
+        let p = pos_rad + (k as f32) * TAU;
+        if p >= limit_lo - JOINT_UNWRAP_EPS && p <= limit_hi + JOINT_UNWRAP_EPS {
+            let d = (p - home_rad).abs();
+            match best {
+                None => best = Some((p, d)),
+                Some((_, bd)) if d < bd => best = Some((p, d)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(p, _)| p).unwrap_or(pos_rad)
+}
+
+/// Error vs joint home using the canonical 2π branch inside limits (see [`canonical_joint_angle`]).
+#[inline]
+pub fn joint_space_error_mag(pos_raw: f32, target_rad: f32, limits: (f32, f32)) -> f32 {
+    let cj = canonical_joint_angle(pos_raw, target_rad, limits.0, limits.1);
+    (cj - target_rad).abs()
+}
+
+/// Raw MIT position command that corresponds to joint angle `target_rad` when the motor currently
+/// reads `pos_raw` (handles branch mismatch between feedback and config frame).
+#[inline]
+pub fn motor_cmd_for_joint_target(pos_raw: f32, target_rad: f32, limits: (f32, f32)) -> f32 {
+    let cj = canonical_joint_angle(pos_raw, target_rad, limits.0, limits.1);
+    pos_raw + target_rad - cj
+}
+
 #[inline]
 fn clamp_cmd_to_limits(cmd: f32, joint_limits_rad: Option<(f32, f32)>) -> f32 {
     joint_limits_rad.map_or(cmd, |(lo, hi)| cmd.clamp(lo, hi))
@@ -330,7 +376,11 @@ impl Motor {
         let pos0 = self.read_position().await?;
         let bounded_joint = joint_limits_rad.is_some();
         let use_short = cfg.prefer_shortest_angle;
-        if linear_error(pos0, target_rad).abs() <= large_error_rad {
+        let initial_far = match joint_limits_rad {
+            Some(lim) => joint_space_error_mag(pos0, target_rad, lim) > large_error_rad,
+            None => linear_error(pos0, target_rad).abs() > large_error_rad,
+        };
+        if !initial_far {
             return Ok(0);
         }
 
@@ -376,7 +426,10 @@ impl Motor {
 
             while start.elapsed() < timeout && start.elapsed() < approach_limit {
                 let pos = self.read_position().await?;
-                let linear_mag = linear_error(pos, target_rad).abs();
+                let linear_mag = match joint_limits_rad {
+                    Some(lim) => joint_space_error_mag(pos, target_rad, lim),
+                    None => linear_error(pos, target_rad).abs(),
+                };
                 if linear_mag + 0.002 < prev_linear_mag {
                     resistance_streak = 0;
                     motion_scale = 1.0;
@@ -394,9 +447,17 @@ impl Motor {
                 let kp_a = cfg.approach_kp * motion_scale;
                 let kd_a = cfg.approach_kd * motion_scale;
 
-                let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
-                let step = delta.clamp(-a_step, a_step);
-                let cmd_pos = clamp_cmd_to_limits(pos + step, joint_limits_rad);
+                let cmd_pos = if let Some(lim) = joint_limits_rad {
+                    let cj = canonical_joint_angle(pos, target_rad, lim.0, lim.1);
+                    let delta = step_delta_toward_home(cj, target_rad, use_short, true);
+                    let step = delta.clamp(-a_step, a_step);
+                    let cj_next = (cj + step).clamp(lim.0, lim.1);
+                    pos + (cj_next - cj)
+                } else {
+                    let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
+                    let step = delta.clamp(-a_step, a_step);
+                    clamp_cmd_to_limits(pos + step, joint_limits_rad)
+                };
                 let state = self
                     .send_control(cmd_pos, 0.0, kp_a, kd_a, 0.0)
                     .await?;
@@ -439,7 +500,10 @@ impl Motor {
         let mut settle_ticks = 0u32;
         while start.elapsed() < timeout {
             let pos = self.read_position().await?;
-            let linear_mag = linear_error(pos, target_rad).abs();
+            let linear_mag = match joint_limits_rad {
+                Some(lim) => joint_space_error_mag(pos, target_rad, lim),
+                None => linear_error(pos, target_rad).abs(),
+            };
             if linear_mag + 0.002 < prev_linear_mag {
                 resistance_streak = 0;
                 motion_scale = 1.0;
@@ -457,12 +521,23 @@ impl Motor {
             }
             let cap = max_step_rad * motion_scale;
             let cmd_pos = if in_direct_zone {
-                clamp_cmd_to_limits(target_rad, joint_limits_rad)
+                match joint_limits_rad {
+                    Some(lim) => motor_cmd_for_joint_target(pos, target_rad, lim),
+                    None => clamp_cmd_to_limits(target_rad, joint_limits_rad),
+                }
             } else {
                 settle_ticks = 0;
-                let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
-                let step = delta.clamp(-cap, cap);
-                clamp_cmd_to_limits(pos + step, joint_limits_rad)
+                if let Some(lim) = joint_limits_rad {
+                    let cj = canonical_joint_angle(pos, target_rad, lim.0, lim.1);
+                    let delta = step_delta_toward_home(cj, target_rad, use_short, true);
+                    let step = delta.clamp(-cap, cap);
+                    let cj_next = (cj + step).clamp(lim.0, lim.1);
+                    pos + (cj_next - cj)
+                } else {
+                    let delta = step_delta_toward_home(pos, target_rad, use_short, bounded_joint);
+                    let step = delta.clamp(-cap, cap);
+                    clamp_cmd_to_limits(pos + step, joint_limits_rad)
+                }
             };
 
             let (kp_cmd, kd_cmd) = if in_direct_zone {
@@ -791,6 +866,44 @@ mod shortest_angle_tests {
     fn step_delta_bounded_joint_always_linear_even_if_huge() {
         let d = super::step_delta_toward_home(6.1, 0.17, true, true);
         assert!((d - (0.17 - 6.1)).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod canonical_joint_tests {
+    use std::f32::consts::TAU;
+
+    use super::{canonical_joint_angle, joint_space_error_mag, motor_cmd_for_joint_target};
+
+    #[test]
+    fn wrong_2pi_branch_maps_into_limits() {
+        let lo = -1.57_f32;
+        let hi = 3.14_f32;
+        let home = 0.0_f32;
+        let physical = -0.52_f32;
+        let raw = physical + TAU;
+        let cj = canonical_joint_angle(raw, home, lo, hi);
+        assert!(
+            (cj - physical).abs() < 0.06,
+            "expected ~{physical}, got {cj}"
+        );
+        let err = joint_space_error_mag(raw, home, (lo, hi));
+        assert!(
+            (err - physical.abs()).abs() < 0.06,
+            "expected ~30° error, got {err} rad"
+        );
+    }
+
+    #[test]
+    fn motor_cmd_for_home_on_wrong_branch() {
+        let lim = (-1.57_f32, 3.14_f32);
+        let home = 0.0_f32;
+        let raw = -0.52_f32 + TAU;
+        let cmd = motor_cmd_for_joint_target(raw, home, lim);
+        assert!(
+            (cmd - TAU).abs() < 0.2 || cmd.abs() < 0.2,
+            "cmd should be ~0 or ~2π, got {cmd}"
+        );
     }
 }
 
