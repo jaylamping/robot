@@ -726,10 +726,6 @@ impl Arm {
 /// Run one continuous sweep pass (current → min → max) using a pre-extracted motor arc.
 /// Does not hold any `Arm` or `AppState` lock during execution.
 /// Returns `true` if the cancellation token fired during the pass.
-///
-/// All error computation is done in the joint config frame using `canonical_joint_angle`
-/// and `motor_cmd_for_joint_target` to handle 2π branch mismatches between the raw
-/// encoder reading and the configured limit values.
 pub async fn sweep_pass(
     motor: &Arc<Mutex<Motor>>,
     min: f32,
@@ -738,33 +734,21 @@ pub async fn sweep_pass(
     step_delay_ms: u64,
     cancel: &CancellationToken,
 ) -> Result<bool> {
-    let limits = (min, max);
-
-    // Read current position first, then send a gentle hold at that position
-    // so the bootstrap command doesn't send the motor somewhere unexpected.
-    // Use send_control_raw throughout the sweep: the sweep does its own
-    // joint-space limit enforcement, and the raw encoder-frame commands
-    // produced by motor_cmd_for_joint_target can be on a different 2π
-    // branch than the config-frame limits, which send_control would clamp.
-    let mut raw = motor.lock().await.read_position().await?;
-    let hold_cmd = motor_cmd_for_joint_target(raw, canonical_joint_angle(raw, min, min, max), limits);
-    let state = motor.lock().await.send_control_raw(hold_cmd, 0.0, 5.0, 0.5, 0.0).await?;
-    raw = state.angle_rad;
+    let mut current = motor.lock().await.read_position().await?;
 
     for &target in &[min, max] {
         loop {
             if cancel.is_cancelled() {
                 return Ok(true);
             }
-            let canonical = canonical_joint_angle(raw, target, min, max);
-            let err = target - canonical;
+            let err = target - current;
             if err.abs() < 0.02 {
                 break;
             }
             let step = err.clamp(-step_rad, step_rad);
-            let cmd = motor_cmd_for_joint_target(raw, canonical + step, limits);
-            let state = motor.lock().await.send_control_raw(cmd, 0.0, 30.0, 1.0, 0.0).await?;
-            raw = state.angle_rad;
+            let cmd = current + step;
+            let state = motor.lock().await.send_control(cmd, 0.0, 30.0, 1.0, 0.0).await?;
+            current = state.angle_rad;
             tokio::time::sleep(Duration::from_millis(step_delay_ms)).await;
         }
     }
@@ -777,28 +761,22 @@ pub async fn sweep_pass(
 pub async fn sweep_home(
     motor: &Arc<Mutex<Motor>>,
     home: f32,
-    min: f32,
-    max: f32,
+    _min: f32,
+    _max: f32,
     step_rad: f32,
     step_delay_ms: u64,
 ) -> Result<()> {
-    let limits = (min, max);
-
-    let mut raw = motor.lock().await.read_position().await?;
-    let hold_cmd = motor_cmd_for_joint_target(raw, canonical_joint_angle(raw, home, min, max), limits);
-    let state = motor.lock().await.send_control_raw(hold_cmd, 0.0, 5.0, 0.5, 0.0).await?;
-    raw = state.angle_rad;
+    let mut current = motor.lock().await.read_position().await?;
 
     loop {
-        let canonical = canonical_joint_angle(raw, home, min, max);
-        let err = home - canonical;
+        let err = home - current;
         if err.abs() < 0.02 {
             break;
         }
         let step = err.clamp(-step_rad, step_rad);
-        let cmd = motor_cmd_for_joint_target(raw, canonical + step, limits);
-        let state = motor.lock().await.send_control_raw(cmd, 0.0, 30.0, 1.0, 0.0).await?;
-        raw = state.angle_rad;
+        let cmd = current + step;
+        let state = motor.lock().await.send_control(cmd, 0.0, 30.0, 1.0, 0.0).await?;
+        current = state.angle_rad;
         tokio::time::sleep(Duration::from_millis(step_delay_ms)).await;
     }
 

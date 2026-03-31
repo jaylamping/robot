@@ -273,35 +273,6 @@ impl Motor {
         Ok(state)
     }
 
-    /// Like `send_control`, but skips the motor-level position clamp and
-    /// soft-limit effort scaling. Use only when the caller has already
-    /// validated the command in joint space (e.g. sweep routines that compute
-    /// raw encoder-frame commands via `motor_cmd_for_joint_target`).
-    pub async fn send_control_raw(
-        &mut self,
-        position_rad: f32,
-        velocity_rads: f32,
-        kp: f32,
-        kd: f32,
-        torque_nm: f32,
-    ) -> Result<MotorState> {
-        self.ensure_enabled().await?;
-
-        let typed = RobStride03Command {
-            target_angle_rad: position_rad,
-            target_velocity_rads: velocity_rads,
-            kp,
-            kd,
-            torque_nm,
-        };
-        let ctrl: ControlCommand = typed.to_control_command();
-        let (id, data) = ctrl.to_can_packet(self.can_id);
-        let fb = self.send_and_recv(id, &data).await?;
-        let state = Self::parse_feedback(fb);
-        self.last_known_position = Some(state.angle_rad);
-        Ok(state)
-    }
-
     pub async fn move_to(
         &mut self,
         position_rad: f32,
