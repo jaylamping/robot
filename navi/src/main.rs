@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
         transport_type,
         log_buffer,
         commissioning_enabled: Arc::new(AtomicBool::new(false)),
-        sweep_tokens: Mutex::new(HashMap::new()),
+        sweep_tasks: Mutex::new(HashMap::new()),
     });
 
     let telem_state = state.clone();

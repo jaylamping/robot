@@ -1600,34 +1600,19 @@ async fn start_sweep(
 ) -> impl IntoResponse {
     let key = format!("{}/{}", side, joint);
 
-    // Cancel any existing sweep for this joint.
+    // Cancel any existing sweep for this joint and wait for it to finish
+    // so two tasks never fight over the same motor.
     {
-        let mut tokens = state.sweep_tokens.lock().await;
-        if let Some(old) = tokens.remove(&key) {
-            old.cancel();
+        let mut tasks = state.sweep_tasks.lock().await;
+        if let Some((old_token, old_handle)) = tasks.remove(&key) {
+            old_token.cancel();
+            drop(tasks); // release lock while we await the old task
+            let _ = old_handle.await;
         }
-        let token = CancellationToken::new();
-        tokens.insert(key.clone(), token);
     }
 
-    // Fetch the token we just inserted so the task can own a clone.
-    let token = {
-        let tokens = state.sweep_tokens.lock().await;
-        tokens.get(&key).cloned()
-    };
-    let Some(token) = token else {
-        return Json(CommandResponse {
-            success: false,
-            error: Some("Failed to create sweep token".into()),
-            angle_rad: None,
-            velocity_rads: None,
-            torque_nm: None,
-        });
-    };
+    let token = CancellationToken::new();
 
-    // Extract the motor arc and limits before spawning so the task never
-    // needs to re-lock state.arms (holding that lock across await points
-    // caused all other API requests to deadlock).
     const STEP_DELAY_MS: u64 = 50;
     let speed = body
         .and_then(|b| b.speed_deg_per_sec)
@@ -1668,11 +1653,9 @@ async fn start_sweep(
     let joint_clone = joint.clone();
     let state_clone = state.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         info!("Sweep started: {}/{} at {:.1}°/sec", side_clone, joint_clone, speed);
 
-        // Safety watchdog: auto-cancel after 10 minutes so a disconnected client
-        // can't leave a zombie sweep running indefinitely.
         let watchdog = tokio::time::sleep(std::time::Duration::from_secs(600));
         tokio::pin!(watchdog);
 
@@ -1698,16 +1681,20 @@ async fn start_sweep(
             }
         }
 
-        // Return to home — lock-free.
-        if let Err(e) = cortex::arm::sweep_home(&motor_arc, home, min, max, step_rad, STEP_DELAY_MS).await {
-            warn!("Sweep home failed for {}/{}: {:#}", side_clone, joint_clone, e);
+        // Return to home — respects cancellation so a new sweep can take over quickly.
+        if !token_clone.is_cancelled() {
+            if let Err(e) = cortex::arm::sweep_home(&motor_arc, home, min, max, step_rad, STEP_DELAY_MS, &token_clone).await {
+                warn!("Sweep home failed for {}/{}: {:#}", side_clone, joint_clone, e);
+            }
         }
 
-        // Remove the token from the map when the task finishes.
         let key = format!("{}/{}", side_clone, joint_clone);
-        state_clone.sweep_tokens.lock().await.remove(&key);
+        state_clone.sweep_tasks.lock().await.remove(&key);
         info!("Sweep finished: {}/{}", side_clone, joint_clone);
     });
+
+    // Store the token and handle so future start/stop calls can cancel and await.
+    state.sweep_tasks.lock().await.insert(key, (token, handle));
 
     Json(CommandResponse {
         success: true,
@@ -1727,8 +1714,11 @@ async fn stop_sweep(
     Path((side, joint)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let key = format!("{}/{}", side, joint);
-    let mut tokens = state.sweep_tokens.lock().await;
-    if let Some(token) = tokens.remove(&key) {
+    let old = {
+        let mut tasks = state.sweep_tasks.lock().await;
+        tasks.remove(&key)
+    };
+    if let Some((token, _handle)) = old {
         token.cancel();
         info!("Sweep stop requested: {}", key);
     }

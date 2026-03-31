@@ -39,8 +39,10 @@ pub struct AppState {
     pub log_buffer: LogBuffer,
     /// When true, spin/torque API skips strict limit-direction rejection (LAN-trusted commissioning).
     pub commissioning_enabled: Arc<AtomicBool>,
-    /// Active sweep cancellation tokens, keyed by "{side}/{joint}".
-    pub sweep_tokens: Mutex<HashMap<String, CancellationToken>>,
+    /// Active sweep tasks, keyed by "{side}/{joint}".
+    /// Stores the cancellation token and the task handle so we can await
+    /// the old task's completion before starting a new one.
+    pub sweep_tasks: Mutex<HashMap<String, (CancellationToken, tokio::task::JoinHandle<()>)>>,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
