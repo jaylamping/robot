@@ -546,13 +546,22 @@ function JointSlider({
   };
 
   useEffect(() => {
+    if (!sweeping) return;
+
+    // On page unload (refresh/close), sendBeacon is guaranteed to fire
+    // even when fetch/XHR requests are cancelled by the browser.
+    const handleUnload = () => {
+      navigator.sendBeacon(`/api/arms/${side}/joints/${joint.name}/sweep/stop`);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+
     return () => {
-      if (sweeping) {
-        stopSweep(side, joint.name).catch(() => {});
-      }
+      window.removeEventListener('beforeunload', handleUnload);
+      // Also fire on React unmount (navigation within the SPA).
+      stopSweep(side, joint.name).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sweeping]);
+  }, [sweeping, side, joint.name]);
 
   const handleZeroAndSetHome = async () => {
     if (joint.can_id == null) return;
