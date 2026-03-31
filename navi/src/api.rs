@@ -1699,7 +1699,7 @@ async fn start_sweep(
         }
 
         // Return to home — lock-free.
-        if let Err(e) = cortex::arm::sweep_home(&motor_arc, home, step_rad, STEP_DELAY_MS).await {
+        if let Err(e) = cortex::arm::sweep_home(&motor_arc, home, min, max, step_rad, STEP_DELAY_MS).await {
             warn!("Sweep home failed for {}/{}: {:#}", side_clone, joint_clone, e);
         }
 
