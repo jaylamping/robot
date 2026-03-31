@@ -759,14 +759,14 @@ function JointSlider({
                     type='number'
                     value={sweepSpeed}
                     min={1}
-                    max={80}
+                    max={150}
                     step={1}
                     onChange={(e) => {
                       const v = Math.round(parseFloat(e.target.value));
-                      if (!isNaN(v)) setSweepSpeed(Math.max(1, Math.min(80, v)));
+                      if (!isNaN(v)) setSweepSpeed(Math.max(1, Math.min(150, v)));
                     }}
                     className='h-6 w-14 text-[10px] px-1.5 text-center'
-                    title='Sweep speed in °/sec (1–80)'
+                    title='Sweep speed in °/sec (1–150)'
                   />
                   <span className='text-[10px] text-muted-foreground'>°/s</span>
                 </div>
