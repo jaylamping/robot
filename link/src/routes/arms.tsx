@@ -303,7 +303,7 @@ function JointSlider({
   const [dragging, setDragging] = useState(false);
   const [dragDeg, setDragDeg] = useState<number | null>(null);
   const [sweeping, setSweeping] = useState(false);
-  const [sweepSpeed, setSweepSpeed] = useState(5);
+  const [sweepSpeed, setSweepSpeed] = useState(20);
   const limitsMut = useUpdateJointLimitsMutation();
   const homeMut = useUpdateJointHomeMutation();
   const moveMut = useMoveMotorMutation();
@@ -563,6 +563,19 @@ function JointSlider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sweeping, side, joint.name]);
 
+  // Live-update sweep speed: debounce 300ms so we don't spam the API
+  // on every keystroke, then send a new start command at the new speed.
+  const [prevSpeed, setPrevSpeed] = useState(sweepSpeed);
+  useEffect(() => {
+    if (!sweeping || sweepSpeed === prevSpeed) return;
+    const timer = setTimeout(() => {
+      setPrevSpeed(sweepSpeed);
+      startSweep(side, joint.name, sweepSpeed).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sweepSpeed, sweeping, side, joint.name]);
+
   const handleZeroAndSetHome = async () => {
     if (joint.can_id == null) return;
     if (
@@ -746,17 +759,14 @@ function JointSlider({
                     type='number'
                     value={sweepSpeed}
                     min={1}
-                    max={30}
+                    max={50}
                     step={1}
                     onChange={(e) => {
                       const v = Math.round(parseFloat(e.target.value));
-                      if (!isNaN(v)) setSweepSpeed(Math.max(1, Math.min(30, v)));
-                    }}
-                    onBlur={() => {
-                      if (sweeping) handleStartSweep();
+                      if (!isNaN(v)) setSweepSpeed(Math.max(1, Math.min(50, v)));
                     }}
                     className='h-6 w-14 text-[10px] px-1.5 text-center'
-                    title='Sweep speed in °/sec (1–30)'
+                    title='Sweep speed in °/sec (1–50)'
                   />
                   <span className='text-[10px] text-muted-foreground'>°/s</span>
                 </div>

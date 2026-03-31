@@ -1583,14 +1583,14 @@ fn all_configured_can_ids(config: &cortex::config::RobotConfig) -> Vec<(u8, Stri
 
 #[derive(Deserialize)]
 struct StartSweepRequest {
-    /// Sweep speed in degrees per second. Defaults to 5. Clamped to 1–30.
+    /// Sweep speed in degrees per second. Defaults to 20. Clamped to 1–50.
     speed_deg_per_sec: Option<f32>,
 }
 
 /// `POST /api/arms/{side}/joints/{joint}/sweep/start`
 ///
 /// Begins a continuous sweep of the joint between its configured limits.
-/// Optional body: `{ "speed_deg_per_sec": 10.0 }` (default 5, range 1–30).
+/// Optional body: `{ "speed_deg_per_sec": 10.0 }` (default 20, range 1–50).
 /// Returns immediately; the sweep runs in a background task until stopped.
 /// Starting a sweep while one is already active for the same joint cancels the old one.
 async fn start_sweep(
@@ -1616,8 +1616,8 @@ async fn start_sweep(
     const STEP_DELAY_MS: u64 = 50;
     let speed = body
         .and_then(|b| b.speed_deg_per_sec)
-        .unwrap_or(5.0)
-        .clamp(1.0, 30.0);
+        .unwrap_or(20.0)
+        .clamp(1.0, 50.0);
     let step_rad: f32 = speed.to_radians() * (STEP_DELAY_MS as f32 / 1000.0);
 
     let sweep_ctx = {
