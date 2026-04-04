@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -1099,8 +1100,12 @@ async fn run_sequence(
 
 #[derive(Serialize)]
 struct DiscoverResult {
+    /// New motors seen on the bus that were added to the map.
     discovered: Vec<u8>,
+    /// Motors that were in the map but no longer responded during the scan.
     removed: Vec<u8>,
+    /// Motors removed because their CAN ID is not assigned to any joint in `robot.yaml` (ghosts).
+    pruned_ghosts: Vec<u8>,
     total: usize,
 }
 
@@ -1111,7 +1116,29 @@ async fn discover_motors(
         StatusCode::SERVICE_UNAVAILABLE
     })?;
 
+    let assigned: HashSet<u8> = {
+        let config = state.config.read().await;
+        config.assigned_can_ids().into_iter().collect()
+    };
+
     let mut motors = state.motors.lock().await;
+
+    let mut pruned_ghosts: Vec<u8> = Vec::new();
+    let orphans: Vec<u8> = motors
+        .keys()
+        .copied()
+        .filter(|id| !assigned.contains(id))
+        .collect();
+    for can_id in orphans {
+        if let Some(motor_arc) = motors.remove(&can_id) {
+            if let Err(e) = motor_arc.lock().await.disable().await {
+                warn!(can_id, error = %e, "disable before dropping orphan motor failed");
+            }
+            pruned_ghosts.push(can_id);
+            info!(can_id, "discover: pruned orphan motor (not assigned in robot.yaml)");
+        }
+    }
+    pruned_ghosts.sort_unstable();
 
     let mut discovered: Vec<u8> = Vec::new();
     let mut removed: Vec<u8> = Vec::new();
@@ -1153,7 +1180,7 @@ async fn discover_motors(
     }
 
     let total = motors.len();
-    let changed = !discovered.is_empty() || !removed.is_empty();
+    let changed = !pruned_ghosts.is_empty() || !discovered.is_empty() || !removed.is_empty();
     drop(motors);
 
     if changed {
@@ -1161,6 +1188,7 @@ async fn discover_motors(
     }
 
     info!(
+        pruned = pruned_ghosts.len(),
         found = discovered.len(),
         removed = removed.len(),
         total,
@@ -1170,6 +1198,7 @@ async fn discover_motors(
     Ok(Json(DiscoverResult {
         discovered,
         removed,
+        pruned_ghosts,
         total,
     }))
 }

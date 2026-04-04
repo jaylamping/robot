@@ -60,6 +60,16 @@ pub fn home_for_motor(config: &RobotConfig, can_id: u8) -> Option<f32> {
 // Pure angle/position math
 // ---------------------------------------------------------------------------
 
+/// RS03 MechPos is nominally within ±4π in the MIT frame. Multi-turn accumulation
+/// can exceed one revolution; values beyond this are almost always corrupt floats
+/// (wrong CAN frame, parse error, or bus noise) and must be rejected.
+pub const MAX_REASONABLE_MECH_POS_RAD: f32 = 80.0;
+
+#[inline]
+pub fn is_valid_mech_pos_reading(rad: f32) -> bool {
+    rad.is_finite() && rad.abs() <= MAX_REASONABLE_MECH_POS_RAD
+}
+
 /// Signed smallest angle from `from_rad` to `to_rad`, in (-pi, pi].
 #[inline]
 pub fn shortest_angle_err(from_rad: f32, to_rad: f32) -> f32 {
@@ -92,7 +102,13 @@ pub fn canonical_joint_angle(
             }
         }
     }
-    best.map(|(p, _)| p).unwrap_or(pos_rad)
+    best.map(|(p, _)| p).unwrap_or_else(|| {
+        if is_valid_mech_pos_reading(pos_rad) {
+            pos_rad
+        } else {
+            home_rad.clamp(limit_lo, limit_hi)
+        }
+    })
 }
 
 /// Error vs joint home using the canonical 2pi branch inside limits.

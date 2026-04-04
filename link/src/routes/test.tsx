@@ -130,12 +130,18 @@ function TestPage() {
   async function handleDiscover() {
     try {
       const result = await discoverMut.mutateAsync()
+      const parts: string[] = []
+      if (result.pruned_ghosts.length > 0) {
+        parts.push(`Dropped ${result.pruned_ghosts.length} ghost(s): ${result.pruned_ghosts.join(', ')}`)
+      }
       if (result.discovered.length > 0) {
-        toast.success(`Discovered ${result.discovered.length} motor(s)`, {
-          description: `CAN IDs: ${result.discovered.join(', ')}`,
-        })
-      } else if (result.removed.length > 0) {
-        toast.info(`Removed ${result.removed.length} offline motor(s)`)
+        parts.push(`Found ${result.discovered.length}: ${result.discovered.join(', ')}`)
+      }
+      if (result.removed.length > 0) {
+        parts.push(`Offline removed: ${result.removed.join(', ')}`)
+      }
+      if (parts.length > 0) {
+        toast.success('Discover complete', { description: parts.join(' · ') })
       } else {
         toast.info(`No changes — ${result.total} motor(s) online`)
       }
@@ -206,6 +212,7 @@ function TestPage() {
             size="sm"
             onClick={() => void handleDiscover()}
             disabled={discoverMut.isPending || busy}
+            title="Drop unassigned motor handles, then scan the bus"
             className="gap-2"
           >
             <LuRadar className={`size-4 ${discoverMut.isPending ? 'animate-spin' : ''}`} />

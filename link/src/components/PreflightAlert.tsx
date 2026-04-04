@@ -149,11 +149,12 @@ export function PreflightAlert({ side, preflight, onDismiss }: PreflightAlertPro
                     <div className="mt-1 text-xs text-muted-foreground">
                       {isMultiturn ? (
                         <>
-                          <span>Raw encoder: <strong>{joint.current_deg.toFixed(1)}°</strong></span>
-                          <span className="mx-2">|</span>
                           <span>
-                            ~{Math.abs(joint.current_rad / (2 * Math.PI)).toFixed(1)} turns accumulated
+                            Joint angle (canonical):{' '}
+                            <strong>{formatDisplayDeg(joint.current_deg)}</strong>
                           </span>
+                          <span className="mx-2">|</span>
+                          <span>~{formatTurnsAccumulated(joint.current_rad)} turns (est.)</span>
                         </>
                       ) : (
                         <>
@@ -275,4 +276,23 @@ function formatJointName(name: string): string {
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ')
+}
+
+/** Avoid scientific notation / overflow garbage if API ever sends corrupt floats. */
+function formatDisplayDeg(deg: number): string {
+  if (!Number.isFinite(deg) || Math.abs(deg) > 1e7) {
+    return '—'
+  }
+  return `${deg.toFixed(1)}°`
+}
+
+function formatTurnsAccumulated(currentRad: number): string {
+  if (!Number.isFinite(currentRad)) {
+    return '—'
+  }
+  const turns = Math.abs(currentRad / (2 * Math.PI))
+  if (turns > 1e6) {
+    return '—'
+  }
+  return turns.toFixed(1)
 }

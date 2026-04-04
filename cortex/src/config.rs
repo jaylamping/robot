@@ -353,6 +353,29 @@ impl RobotConfig {
         Ok(())
     }
 
+    /// CAN IDs assigned to joints in this config (same set used to register `Motor` handles at startup).
+    pub fn assigned_can_ids(&self) -> Vec<u8> {
+        let mut ids = Vec::new();
+        for arm in [self.arm_left.as_ref(), self.arm_right.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            for (_name, joint) in arm.joints() {
+                if let Some(id) = joint.can_id {
+                    ids.push(id);
+                }
+            }
+        }
+        if let Some(ref waist) = self.waist {
+            for (_name, joint) in waist {
+                if let Some(id) = joint.can_id {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
     /// List all available joint slots with their current CAN ID assignment.
     pub fn joint_slots(&self) -> Vec<(String, String, Option<u8>)> {
         let mut slots = Vec::new();

@@ -1,8 +1,8 @@
 use cortex::config::{BusConfig, RobotConfig};
 use cortex::safety::{
     JOINT_UNWRAP_EPS, canonical_joint_angle, canonical_position_for_limits, is_home_within_joint_limits,
-    is_within_limits, limits_for_motor, shortest_angle_err, soft_limit_effort_scale,
-    step_delta_toward_home, validate_velocity_command,
+    is_valid_mech_pos_reading, is_within_limits, limits_for_motor, shortest_angle_err,
+    soft_limit_effort_scale, step_delta_toward_home, validate_velocity_command,
 };
 use std::f32::consts::{PI, TAU};
 
@@ -15,6 +15,28 @@ fn shortest_angle_small_delta() {
 fn shortest_angle_wraps_near_tau() {
     let d = shortest_angle_err(6.1, 0.17);
     assert!(d > 0.0 && d < 1.0, "d={}", d);
+}
+
+#[test]
+fn mech_pos_rejects_corrupt_floats() {
+    assert!(is_valid_mech_pos_reading(0.0));
+    assert!(is_valid_mech_pos_reading(18.85));
+    assert!(!is_valid_mech_pos_reading(f32::NAN));
+    assert!(!is_valid_mech_pos_reading(f32::INFINITY));
+    assert!(!is_valid_mech_pos_reading(1e30));
+}
+
+#[test]
+fn canonical_falls_back_to_home_when_raw_is_corrupt() {
+    let lo = -1.57_f32;
+    let hi = 3.14_f32;
+    let home = 0.0_f32;
+    let garbage = 1e30_f32;
+    let cj = canonical_joint_angle(garbage, home, lo, hi);
+    assert!(
+        (cj - home).abs() < 1e-5,
+        "expected home clamp, got {cj}"
+    );
 }
 
 #[test]

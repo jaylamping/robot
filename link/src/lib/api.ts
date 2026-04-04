@@ -314,9 +314,13 @@ export function setArmPose(side: string, pose: PoseRequest): Promise<CommandResp
   })
 }
 
+/** Result of POST /discover: prune YAML orphans, then bus scan. */
 export interface DiscoverResult {
   discovered: number[]
+  /** No longer responding during scan */
   removed: number[]
+  /** Dropped because CAN ID not assigned to any joint in robot.yaml */
+  pruned_ghosts: number[]
   total: number
 }
 

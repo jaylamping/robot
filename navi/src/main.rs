@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
         let protocol = create_protocol(&config.bus).await?;
         transport_type = config.bus.transport.clone();
 
-        let all_ids = collect_can_ids(&config);
+        let all_ids = config.assigned_can_ids();
         for can_id in all_ids {
             info!(can_id, "registering motor");
             let mut motor = Motor::new(protocol.clone(), can_id);
@@ -233,24 +233,3 @@ async fn shutdown_signal(state: Arc<AppState>) {
     info!("All motors disabled. Goodbye.");
 }
 
-fn collect_can_ids(config: &RobotConfig) -> Vec<u8> {
-    let mut ids = Vec::new();
-    for arm in [config.arm_left.as_ref(), config.arm_right.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        for (_name, joint) in arm.joints() {
-            if let Some(id) = joint.can_id {
-                ids.push(id);
-            }
-        }
-    }
-    if let Some(ref waist) = config.waist {
-        for (_name, joint) in waist {
-            if let Some(id) = joint.can_id {
-                ids.push(id);
-            }
-        }
-    }
-    ids
-}

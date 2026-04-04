@@ -144,6 +144,7 @@ impl Motor {
         self.enabled = true;
         self.stall_detector.reset();
         let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
         self.last_known_position = Some(state.angle_rad);
         Ok(state)
     }
@@ -166,6 +167,7 @@ impl Motor {
         let fb = self.send_and_recv(id, &data).await?;
         self.enabled = false;
         let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
 
         self.auto_normalize_if_multiturn().await;
 
@@ -199,7 +201,9 @@ impl Motor {
         let (id, data) = cmd.to_can_packet(self.can_id);
         let fb = self.send_and_recv(id, &data).await?;
         self.enabled = false;
-        Ok(Self::parse_feedback(fb))
+        let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
+        Ok(state)
     }
 
     pub async fn set_zero(&mut self) -> Result<()> {
@@ -292,6 +296,7 @@ impl Motor {
         let (id, data) = ctrl.to_can_packet(self.can_id);
         let fb = self.send_and_recv(id, &data).await?;
         let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
         self.last_known_position = Some(state.angle_rad);
 
         if self.stall_detector.update(state.torque_nm, state.velocity_rads) {
@@ -645,6 +650,7 @@ impl Motor {
         let (id, data) = cmd.to_can_packet(self.can_id);
         let fb = self.send_and_recv(id, &data).await?;
         let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
         self.last_known_position = Some(state.angle_rad);
         Ok(state)
     }
@@ -677,6 +683,7 @@ impl Motor {
         }
 
         let state = Self::parse_feedback(fb);
+        Self::validate_feedback_angle(&state)?;
         self.last_known_position = Some(state.angle_rad);
         Ok(state)
     }
@@ -715,6 +722,13 @@ impl Motor {
 
     pub async fn read_position(&mut self) -> Result<f32> {
         let pos = self.read_param(RobStride03Parameter::MechPos).await?;
+        if !safety::is_valid_mech_pos_reading(pos) {
+            anyhow::bail!(
+                "invalid mechanical position read: {:.4} rad (expected finite value within ±{:.0} rad; check CAN wiring / response)",
+                pos,
+                safety::MAX_REASONABLE_MECH_POS_RAD
+            );
+        }
         self.last_known_position = Some(pos);
         Ok(pos)
     }
@@ -823,6 +837,17 @@ impl Motor {
         let cmd = Command::from_can_packet(resp_id, resp_data);
         let fb = FeedbackFrame::from_command(cmd);
         Ok(fb)
+    }
+
+    fn validate_feedback_angle(state: &MotorState) -> Result<()> {
+        if !safety::is_valid_mech_pos_reading(state.angle_rad) {
+            anyhow::bail!(
+                "invalid angle in feedback: {:.4} rad (expected within ±{:.0} rad)",
+                state.angle_rad,
+                safety::MAX_REASONABLE_MECH_POS_RAD
+            );
+        }
+        Ok(())
     }
 
     fn parse_feedback(fb: FeedbackFrame) -> MotorState {

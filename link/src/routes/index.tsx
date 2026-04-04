@@ -115,6 +115,7 @@ function OverviewPage() {
             size="sm"
             onClick={() => void handleDiscover()}
             disabled={discoverMut.isPending}
+            title="Drop unassigned motor handles (not in robot.yaml), then scan the bus for devices"
             className="gap-2"
           >
             <LuRadar className={`size-4 ${discoverMut.isPending ? 'animate-spin' : ''}`} />
@@ -136,7 +137,13 @@ function OverviewPage() {
           )}
         </div>
         {discoverResult && (
-          <div className="mt-3 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm">
+          <div className="mt-3 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm space-y-1">
+            {discoverResult.pruned_ghosts.length > 0 && (
+              <p className="text-sky-400">
+                Dropped ghosts (not in robot.yaml):{' '}
+                {discoverResult.pruned_ghosts.map(id => `motor ${id}`).join(', ')}
+              </p>
+            )}
             {discoverResult.discovered.length > 0 && (
               <p className="text-emerald-400">
                 Found: {discoverResult.discovered.map(id => `motor ${id}`).join(', ')}
@@ -144,12 +151,14 @@ function OverviewPage() {
             )}
             {discoverResult.removed.length > 0 && (
               <p className="text-amber-400">
-                Removed: {discoverResult.removed.map(id => `motor ${id}`).join(', ')}
+                Removed (offline): {discoverResult.removed.map(id => `motor ${id}`).join(', ')}
               </p>
             )}
-            {discoverResult.discovered.length === 0 && discoverResult.removed.length === 0 && (
-              <p className="text-muted-foreground">No changes — {discoverResult.total} motor(s) online</p>
-            )}
+            {discoverResult.discovered.length === 0 &&
+              discoverResult.removed.length === 0 &&
+              discoverResult.pruned_ghosts.length === 0 && (
+                <p className="text-muted-foreground">No changes — {discoverResult.total} motor(s) online</p>
+              )}
           </div>
         )}
       </div>
