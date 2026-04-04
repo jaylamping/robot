@@ -162,6 +162,11 @@ export function getStatus(): Promise<ServerStatus> {
   return fetchJson('/status')
 }
 
+/** Linux robot only; requires passwordless `sudo /sbin/reboot` for the navi user. */
+export function requestSystemReboot(): Promise<CommandResponse> {
+  return fetchJson('/system/reboot', { method: 'POST' })
+}
+
 export function getCommissioning(): Promise<CommissioningResponse> {
   return fetchJson('/safety/commissioning')
 }

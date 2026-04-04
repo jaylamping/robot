@@ -215,6 +215,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/config", get(get_config))
         .route("/cert-hash", get(get_cert_hash))
         .route("/status", get(get_status))
+        .route("/system/reboot", post(system_reboot))
         .route(
             "/safety/commissioning",
             get(get_commissioning).post(set_commissioning),
@@ -272,6 +273,62 @@ async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         motor_count: motors.len(),
         transport_type: state.transport_type.clone(),
     })
+}
+
+/// `POST /api/system/reboot` — schedules an immediate host reboot (Linux robot only).
+/// Requires `sudo NOPASSWD` for `/sbin/reboot` for the user running `navi` (see deploy docs).
+/// Disabled when `navi` is run with `--no-hardware` (dev / non-robot).
+async fn system_reboot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if state.mode != "hardware" {
+        return Json(CommandResponse {
+            success: false,
+            error: Some(
+                "Reboot is only available when navi runs on the robot (not with --no-hardware)"
+                    .into(),
+            ),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        info!("host reboot requested via API");
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            match tokio::process::Command::new("sudo")
+                .args(["-n", "/sbin/reboot"])
+                .status()
+                .await
+            {
+                Ok(s) if s.success() => info!("reboot command accepted"),
+                Ok(s) => warn!(
+                    code = ?s.code(),
+                    "reboot failed — add NOPASSWD for /sbin/reboot for the navi user"
+                ),
+                Err(e) => warn!(?e, "failed to spawn reboot"),
+            }
+        });
+        Json(CommandResponse {
+            success: true,
+            error: None,
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Json(CommandResponse {
+            success: false,
+            error: Some("Reboot is only supported on the Linux robot host".into()),
+            angle_rad: None,
+            velocity_rads: None,
+            torque_nm: None,
+        })
+    }
 }
 
 /// LAN-trusted toggle: when enabled, `/motors/{id}/spin` and `/torque` skip strict limit-direction checks.

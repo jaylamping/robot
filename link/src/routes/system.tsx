@@ -1,7 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { type ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
+import { toast } from 'sonner'
 import { useTelemetryStore } from '@/stores/telemetry'
+import { requestSystemReboot } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -13,7 +16,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useRobotConfig, useRobotServerStatus } from '@/lib/queries'
-import { LuServer, LuRadio, LuCpu, LuThermometer, LuMemoryStick } from 'react-icons/lu'
+import { LuServer, LuRadio, LuCpu, LuThermometer, LuMemoryStick, LuPower } from 'react-icons/lu'
 
 export const Route = createFileRoute('/system')({
   component: SystemPage,
@@ -22,6 +25,7 @@ export const Route = createFileRoute('/system')({
 function SystemPage() {
   const statusQ = useRobotServerStatus({ refetchInterval: 5000 })
   const configQ = useRobotConfig()
+  const [rebooting, setRebooting] = useState(false)
   const connected = useTelemetryStore((s) => s.connected)
   const motors = useTelemetryStore((s) => s.motors)
   const systemTelemetry = useTelemetryStore((s) => s.system)
@@ -37,6 +41,35 @@ function SystemPage() {
 
   const status = statusQ.data
   const config = configQ.data
+  const canRebootHost = status?.mode === 'hardware'
+
+  async function handleRebootHost() {
+    if (
+      !confirm(
+        'Reboot the robot computer (e.g. Raspberry Pi)?\n\n' +
+          'Motors will lose power / control until Link is back. Only continue if the arm is safe and you can reach power/E-STOP.',
+      )
+    ) {
+      return
+    }
+    setRebooting(true)
+    try {
+      const res = await requestSystemReboot()
+      if (res.success) {
+        toast.success('Reboot scheduled', {
+          description: 'The host should restart in a few seconds.',
+        })
+      } else {
+        toast.error('Reboot failed', { description: res.error })
+      }
+    } catch (e) {
+      toast.error('Reboot failed', {
+        description: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setRebooting(false)
+    }
+  }
 
   return (
     <div>
@@ -66,6 +99,35 @@ function SystemPage() {
           badge={connected ? 'default' : 'destructive'}
         />
       </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Host</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-3">
+            Full system reboot (Linux robot only). Requires passwordless{' '}
+            <code className="text-xs bg-muted px-1 py-0.5 rounded">sudo /sbin/reboot</code> for
+            the user running navi on the Pi.
+          </p>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="gap-2"
+            disabled={!canRebootHost || rebooting}
+            onClick={() => void handleRebootHost()}
+          >
+            <LuPower className="size-4" />
+            {rebooting ? 'Requesting…' : 'Reboot host'}
+          </Button>
+          {!canRebootHost && (
+            <p className="text-xs text-muted-foreground mt-2">
+              Not available in mock mode (<code className="text-[10px]">--no-hardware</code>).
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader>
