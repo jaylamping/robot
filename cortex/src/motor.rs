@@ -52,6 +52,7 @@ pub struct Motor {
     soft_limit_margin_rad: f32,
     last_known_position: Option<f32>,
     home_rad: f32,
+    stall_detector: safety::StallDetector,
 }
 
 impl Motor {
@@ -66,6 +67,7 @@ impl Motor {
             soft_limit_margin_rad: safety::DEFAULT_SOFT_LIMIT_MARGIN_RAD,
             last_known_position: None,
             home_rad: 0.0,
+            stall_detector: safety::StallDetector::new(safety::StallConfig::default()),
         }
     }
 
@@ -111,6 +113,26 @@ impl Motor {
         self.home_rad
     }
 
+    // -- Stall detection --
+
+    pub fn stall_detector_mut(&mut self) -> &mut safety::StallDetector {
+        &mut self.stall_detector
+    }
+
+    pub fn set_stall_config(&mut self, config: safety::StallConfig) {
+        self.stall_detector.set_config(config);
+    }
+
+    /// Temporarily suppress stall detection (e.g. during homing which has its own
+    /// more nuanced resistance handling). Call `enable_stall_detection()` to re-arm.
+    pub fn suppress_stall_detection(&mut self) {
+        self.stall_detector.disable();
+    }
+
+    pub fn enable_stall_detection(&mut self) {
+        self.stall_detector.enable();
+    }
+
     // -- Lifecycle --
 
     pub async fn enable(&mut self) -> Result<MotorState> {
@@ -120,6 +142,7 @@ impl Motor {
         let (id, data) = cmd.to_can_packet(self.can_id);
         let fb = self.send_and_recv(id, &data).await?;
         self.enabled = true;
+        self.stall_detector.reset();
         let state = Self::parse_feedback(fb);
         self.last_known_position = Some(state.angle_rad);
         Ok(state)
@@ -270,6 +293,24 @@ impl Motor {
         let fb = self.send_and_recv(id, &data).await?;
         let state = Self::parse_feedback(fb);
         self.last_known_position = Some(state.angle_rad);
+
+        if self.stall_detector.update(state.torque_nm, state.velocity_rads) {
+            info!(
+                can_id = self.can_id,
+                torque_nm = state.torque_nm,
+                velocity_rads = state.velocity_rads,
+                "stall detected — disabling motor"
+            );
+            let _ = self.disable().await;
+            anyhow::bail!(
+                "Motor {} disabled: stall/collision detected \
+                 (torque {:.1} N-m, velocity {:.3} rad/s)",
+                self.can_id,
+                state.torque_nm,
+                state.velocity_rads,
+            );
+        }
+
         Ok(state)
     }
 
@@ -325,6 +366,8 @@ impl Motor {
             return Ok(0);
         }
 
+        self.stall_detector.disable();
+
         let direct_within_base = cfg.recovery_direct_command_within_rad as f32;
         let direct_within = if cfg.approach_enabled {
             direct_within_base.max(cfg.approach_handoff_rad as f32)
@@ -378,6 +421,7 @@ impl Motor {
                 prev_linear_mag = linear_mag;
 
                 if linear_mag < settle_tolerance_rad {
+                    self.stall_detector.enable();
                     return Ok(stall_backoffs);
                 }
                 if linear_mag <= handoff {
@@ -456,6 +500,7 @@ impl Motor {
             prev_linear_mag = linear_mag;
 
             if linear_mag < settle_tolerance_rad {
+                self.stall_detector.enable();
                 return Ok(stall_backoffs);
             }
 
@@ -532,6 +577,7 @@ impl Motor {
             tokio::time::sleep(step_period).await;
         }
 
+        self.stall_detector.enable();
         anyhow::bail!(
             "startup recovery timed out: target {:.3} rad, last read {:.3} rad",
             target_rad,

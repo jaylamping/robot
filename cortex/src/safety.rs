@@ -316,3 +316,93 @@ pub fn validate_torque_command(
     );
     Ok(torque_nm * scale)
 }
+
+// ---------------------------------------------------------------------------
+// Stall / collision detection
+// ---------------------------------------------------------------------------
+
+/// Configurable thresholds for stall (collision) detection.
+#[derive(Debug, Clone)]
+pub struct StallConfig {
+    /// Minimum absolute torque (N-m) to consider the motor loaded.
+    pub torque_trip_nm: f32,
+    /// Maximum absolute velocity (rad/s) below which the motor is considered stalled.
+    pub velocity_trip_rads: f32,
+    /// How many consecutive stall ticks before tripping.
+    pub confirm_ticks: u32,
+}
+
+impl Default for StallConfig {
+    fn default() -> Self {
+        Self {
+            torque_trip_nm: 12.0,
+            velocity_trip_rads: 0.15,
+            confirm_ticks: 3,
+        }
+    }
+}
+
+/// Tracks consecutive stall ticks and trips when the threshold is reached.
+///
+/// Embed in `Motor` or use standalone. Call `update()` after each control tick
+/// with the feedback torque and velocity. Returns `true` when a stall trip fires.
+#[derive(Debug)]
+pub struct StallDetector {
+    config: StallConfig,
+    streak: u32,
+    enabled: bool,
+}
+
+impl StallDetector {
+    pub fn new(config: StallConfig) -> Self {
+        Self {
+            config,
+            streak: 0,
+            enabled: true,
+        }
+    }
+
+    /// Feed one tick of motor feedback. Returns `true` if a stall trip fires.
+    pub fn update(&mut self, torque_nm: f32, velocity_rads: f32) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let looks_blocked = torque_nm.abs() >= self.config.torque_trip_nm
+            && velocity_rads.abs() <= self.config.velocity_trip_rads;
+        if looks_blocked {
+            self.streak += 1;
+            self.streak >= self.config.confirm_ticks
+        } else {
+            self.streak = 0;
+            false
+        }
+    }
+
+    /// Reset the consecutive stall counter to zero.
+    pub fn reset(&mut self) {
+        self.streak = 0;
+    }
+
+    pub fn enable(&mut self) {
+        self.enabled = true;
+        self.streak = 0;
+    }
+
+    pub fn disable(&mut self) {
+        self.enabled = false;
+        self.streak = 0;
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn config(&self) -> &StallConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: StallConfig) {
+        self.config = config;
+        self.streak = 0;
+    }
+}

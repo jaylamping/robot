@@ -181,6 +181,14 @@ impl Arm {
         }
     }
 
+    /// Re-populate joints and startup params from the current config and motor map.
+    /// Call after CAN ID assignments or motor discovery changes.
+    pub fn rebuild(&mut self, config: &ArmConfig, motors: &HashMap<u8, Arc<Mutex<Motor>>>) {
+        let fresh = Arm::new(config, motors);
+        self.joints = fresh.joints;
+        self.joint_startup = fresh.joint_startup;
+    }
+
     fn find_motor(&self, name: &str) -> Option<&Arc<Mutex<Motor>>> {
         self.joints.iter().find(|j| j.name == name).map(|j| &j.motor)
     }
@@ -727,10 +735,9 @@ impl Arm {
 /// Does not hold any `Arm` or `AppState` lock during execution.
 /// Returns `true` if the cancellation token fired during the pass.
 ///
-/// Advances a waypoint position by `step_rad` each tick and commands the motor
-/// to that waypoint with a velocity feedforward matching the sweep speed.
-/// The velocity feedforward prevents the motor from decelerating to a stop
-/// between waypoints, producing smooth continuous motion.
+/// Stall/collision protection is handled by `Motor::send_control()` — if the motor
+/// detects a sustained stall it will disable itself and return an error that
+/// propagates up through this function.
 pub async fn sweep_pass(
     motor: &Arc<Mutex<Motor>>,
     min: f32,

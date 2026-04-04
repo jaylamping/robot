@@ -1075,7 +1075,12 @@ async fn discover_motors(
     }
 
     let total = motors.len();
+    let changed = !discovered.is_empty() || !removed.is_empty();
     drop(motors);
+
+    if changed {
+        rebuild_arms(&state).await;
+    }
 
     info!(
         found = discovered.len(),
@@ -1110,29 +1115,33 @@ async fn assign_motor(
     Path(id): Path<u8>,
     Json(req): Json<AssignRequest>,
 ) -> impl IntoResponse {
-    let mut config = state.config.write().await;
+    {
+        let mut config = state.config.write().await;
 
-    if let Err(e) = config.assign_can_id(&req.section, &req.joint, id) {
-        return Json(CommandResponse {
-            success: false,
-            error: Some(format!("{:#}", e)),
-            angle_rad: None,
-            velocity_rads: None,
-            torque_nm: None,
-        });
-    }
+        if let Err(e) = config.assign_can_id(&req.section, &req.joint, id) {
+            return Json(CommandResponse {
+                success: false,
+                error: Some(format!("{:#}", e)),
+                angle_rad: None,
+                velocity_rads: None,
+                torque_nm: None,
+            });
+        }
 
-    if let Err(e) = config.save(&state.config_path) {
-        return Json(CommandResponse {
-            success: false,
-            error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
-            angle_rad: None,
-            velocity_rads: None,
-            torque_nm: None,
-        });
-    }
+        if let Err(e) = config.save(&state.config_path) {
+            return Json(CommandResponse {
+                success: false,
+                error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
+                angle_rad: None,
+                velocity_rads: None,
+                torque_nm: None,
+            });
+        }
 
-    info!(can_id = id, section = %req.section, joint = %req.joint, "motor assigned to joint");
+        info!(can_id = id, section = %req.section, joint = %req.joint, "motor assigned to joint");
+    } // config write lock released
+
+    rebuild_arms(&state).await;
 
     Json(CommandResponse {
         success: true,
@@ -1147,21 +1156,25 @@ async fn unassign_motor(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u8>,
 ) -> impl IntoResponse {
-    let mut config = state.config.write().await;
+    {
+        let mut config = state.config.write().await;
 
-    config.clear_can_id(id);
+        config.clear_can_id(id);
 
-    if let Err(e) = config.save(&state.config_path) {
-        return Json(CommandResponse {
-            success: false,
-            error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
-            angle_rad: None,
-            velocity_rads: None,
-            torque_nm: None,
-        });
-    }
+        if let Err(e) = config.save(&state.config_path) {
+            return Json(CommandResponse {
+                success: false,
+                error: Some(format!("Config updated in memory but failed to save to disk: {:#}", e)),
+                angle_rad: None,
+                velocity_rads: None,
+                torque_nm: None,
+            });
+        }
 
-    info!(can_id = id, "motor unassigned");
+        info!(can_id = id, "motor unassigned");
+    } // config write lock released
+
+    rebuild_arms(&state).await;
 
     Json(CommandResponse {
         success: true,
@@ -1458,6 +1471,27 @@ async fn update_joint_home(
 }
 
 // -- Helpers --
+
+/// Rebuild Arm structs from the current config and motor map.
+/// Call after CAN ID assignments or motor discovery changes so arm-level
+/// operations (sweep, homing, preflight, etc.) pick up the new motors.
+async fn rebuild_arms(state: &AppState) {
+    let config = state.config.read().await;
+    let motors = state.motors.lock().await;
+    let mut arms = state.arms.lock().await;
+    if let Some(ref arm_cfg) = config.arm_left {
+        if let Some(arm) = arms.get_mut("left") {
+            arm.rebuild(arm_cfg, &motors);
+            info!("rebuilt left arm ({} joints)", arm.joint_names().len());
+        }
+    }
+    if let Some(ref arm_cfg) = config.arm_right {
+        if let Some(arm) = arms.get_mut("right") {
+            arm.rebuild(arm_cfg, &motors);
+            info!("rebuilt right arm ({} joints)", arm.joint_names().len());
+        }
+    }
+}
 
 /// Look up the CAN ID for a section+joint from the config.
 fn can_id_for_joint(config: &cortex::config::RobotConfig, section: &str, joint: &str) -> Option<u8> {
