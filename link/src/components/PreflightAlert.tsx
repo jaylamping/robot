@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useHomeArmMutation, useZeroMotorMutation } from '@/lib/mutations/robot'
 import { linkKeys, useRobotArms } from '@/lib/queries'
-import type { PreflightResult, PreflightJoint } from '@/lib/api'
+import { getArmPreflight, type PreflightJoint, type PreflightResult } from '@/lib/api'
 import { toast } from 'sonner'
 import { LuTriangleAlert, LuRotateCw, LuShieldAlert, LuRefreshCw } from 'react-icons/lu'
 
@@ -39,9 +39,11 @@ export function PreflightAlert({ side, preflight, onDismiss }: PreflightAlertPro
   const handleRecheck = async () => {
     setChecking(true)
     try {
-      await qc.refetchQueries({ queryKey: linkKeys.armPreflight(side) })
-      const result = qc.getQueryData<PreflightResult>(linkKeys.armPreflight(side))
-      if (result?.pass) {
+      const result = await qc.fetchQuery({
+        queryKey: linkKeys.armPreflight(side),
+        queryFn: () => getArmPreflight(side),
+      })
+      if (result.pass) {
         toast.success('Pre-flight check passed')
         onDismiss?.()
       }

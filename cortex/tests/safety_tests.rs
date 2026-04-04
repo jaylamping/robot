@@ -1,8 +1,8 @@
 use cortex::config::{BusConfig, RobotConfig};
 use cortex::safety::{
-    JOINT_UNWRAP_EPS, canonical_joint_angle, canonical_position_for_limits, is_within_limits,
-    limits_for_motor, shortest_angle_err, soft_limit_effort_scale, step_delta_toward_home,
-    validate_velocity_command,
+    JOINT_UNWRAP_EPS, canonical_joint_angle, canonical_position_for_limits, is_home_within_joint_limits,
+    is_within_limits, limits_for_motor, shortest_angle_err, soft_limit_effort_scale,
+    step_delta_toward_home, validate_velocity_command,
 };
 use std::f32::consts::{PI, TAU};
 
@@ -29,6 +29,13 @@ fn canonical_maps_wrong_branch() {
         (cj - physical).abs() < 0.06,
         "expected ~{physical}, got {cj}"
     );
+}
+
+#[test]
+fn home_zero_allowed_with_positive_lo_limit() {
+    // Elbow-style limits; encoder zero-at-home matches canonical slack used elsewhere
+    assert!(is_home_within_joint_limits(0.0, 0.087, 2.793));
+    assert!(!is_home_within_joint_limits(-1.0, 0.087, 2.793));
 }
 
 #[test]

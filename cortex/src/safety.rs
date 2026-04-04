@@ -167,6 +167,15 @@ pub fn is_within_limits(canonical_pos: f32, limits: (f32, f32)) -> bool {
     canonical_pos >= limits.0 - JOINT_UNWRAP_EPS && canonical_pos <= limits.1 + JOINT_UNWRAP_EPS
 }
 
+/// Whether a persisted `home_rad` is acceptable relative to joint limits.
+/// Uses the same ±[`JOINT_UNWRAP_EPS`] slack as [`canonical_joint_angle`] and [`is_within_limits`].
+/// This allows `0.0` when limits start slightly above zero (e.g. `[0.087, 2.793]`), matching
+/// the case where the encoder was just zeroed at the home pose (`Zero & Set Home`).
+pub fn is_home_within_joint_limits(home_rad: f64, limit_lo: f64, limit_hi: f64) -> bool {
+    let eps = JOINT_UNWRAP_EPS as f64;
+    home_rad >= limit_lo - eps && home_rad <= limit_hi + eps
+}
+
 // ---------------------------------------------------------------------------
 // Soft-limit effort scaling
 // ---------------------------------------------------------------------------

@@ -183,6 +183,23 @@ struct HomeArmRequest {
     override_preflight: bool,
 }
 
+/// Response from `POST /joints/{section}/{joint}/zero-reframe-home`.
+#[derive(Serialize)]
+struct ZeroReframeHomeResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// Encoder reading (rad) before `set_zero`; subtracted from saved limits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset_rad: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits_min_rad: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limits_max_rad: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    home_rad: Option<f64>,
+}
+
 #[derive(Serialize)]
 struct JointHomeStatusJson {
     joint_name: String,
@@ -231,6 +248,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/joint-slots", get(get_joint_slots))
         .route("/joints/{section}/{joint}/limits", put(update_joint_limits))
         .route("/joints/{section}/{joint}/home", put(update_joint_home))
+        .route(
+            "/joints/{section}/{joint}/zero-reframe-home",
+            post(zero_reframe_home),
+        )
         .route(
             "/arms/{side}/joints/{joint}/sweep/start",
             post(start_sweep),
@@ -1384,10 +1405,16 @@ async fn update_joint_home(
         };
 
         if let Some((lo, hi)) = limits {
-            if new_home < lo || new_home > hi {
+            if !safety::is_home_within_joint_limits(new_home, lo, hi) {
                 return Json(CommandResponse {
                     success: false,
-                    error: Some(format!("home_rad {:.3} is outside limits [{:.3}, {:.3}]", new_home, lo, hi)),
+                    error: Some(format!(
+                        "home_rad {:.3} is outside limits [{:.3}, {:.3}] (±{:.3} slack, same as motion math)",
+                        new_home,
+                        lo,
+                        hi,
+                        safety::JOINT_UNWRAP_EPS,
+                    )),
                     angle_rad: None,
                     velocity_rads: None,
                     torque_nm: None,
@@ -1468,6 +1495,254 @@ async fn update_joint_home(
         velocity_rads: None,
         torque_nm: None,
     })
+}
+
+/// `POST /api/joints/{section}/{joint}/zero-reframe-home`
+///
+/// Reads encoder position `z`, calls `set_zero()`, then shifts saved `limits` by `−z` and sets
+/// `home_rad = 0`. Physical joint travel is unchanged: e.g. limits 5°–160° with zero at ~5° become
+/// ~0°–155° in the new encoder frame.
+async fn zero_reframe_home(
+    State(state): State<Arc<AppState>>,
+    Path((section, joint)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    use std::f64::consts::TAU;
+    const EPS: f64 = 1e-9;
+    const MAX_RANGE: f64 = TAU;
+
+    match section.as_str() {
+        "arm_left" | "arm_right" | "waist" => {}
+        _ => {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!("unsupported section '{}'", section)),
+                offset_rad: None,
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+    }
+
+    let can_id = {
+        let config = state.config.read().await;
+        match can_id_for_joint(&config, &section, &joint) {
+            Some(id) => id,
+            None => {
+                return Ok(Json(ZeroReframeHomeResponse {
+                    success: false,
+                    error: Some(format!("joint '{}' in section '{}' has no CAN id", joint, section)),
+                    offset_rad: None,
+                    limits_min_rad: None,
+                    limits_max_rad: None,
+                    home_rad: None,
+                }));
+            }
+        }
+    };
+
+    let motor_arc = {
+        let motors = state.motors.lock().await;
+        match motors.get(&can_id).cloned() {
+            Some(m) => m,
+            None => return Err(StatusCode::NOT_FOUND),
+        }
+    };
+
+    let z = {
+        let mut motor = motor_arc.lock().await;
+        match motor.read_position().await {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(Json(ZeroReframeHomeResponse {
+                    success: false,
+                    error: Some(format!("failed to read position before zero: {:#}", e)),
+                    offset_rad: None,
+                    limits_min_rad: None,
+                    limits_max_rad: None,
+                    home_rad: None,
+                }));
+            }
+        }
+    };
+
+    {
+        let mut motor = motor_arc.lock().await;
+        if let Err(e) = motor.set_zero().await {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!("set_zero failed: {:#}", e)),
+                offset_rad: Some(z),
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+    }
+
+    let z64 = z as f64;
+    let (lo_new, hi_new) = {
+        let mut config = state.config.write().await;
+
+        let limits_opt: Option<(f64, f64)> = match section.as_str() {
+            "arm_left" => config.arm_left.as_ref().and_then(|arm| {
+                arm.joints()
+                    .into_iter()
+                    .find(|(n, _)| *n == joint)
+                    .map(|(_, j)| j.limits)
+            }),
+            "arm_right" => config.arm_right.as_ref().and_then(|arm| {
+                arm.joints()
+                    .into_iter()
+                    .find(|(n, _)| *n == joint)
+                    .map(|(_, j)| j.limits)
+            }),
+            "waist" => config
+                .waist
+                .as_ref()
+                .and_then(|w| w.get(&joint).map(|j| j.limits)),
+            _ => None,
+        };
+
+        let (lo, hi) = match limits_opt {
+            Some((lo, hi)) => (lo, hi),
+            None => {
+                return Ok(Json(ZeroReframeHomeResponse {
+                    success: false,
+                    error: Some(format!("joint '{}' not found in section '{}'", joint, section)),
+                    offset_rad: Some(z),
+                    limits_min_rad: None,
+                    limits_max_rad: None,
+                    home_rad: None,
+                }));
+            }
+        };
+
+        let lo_new = lo - z64;
+        let hi_new = hi - z64;
+
+        if lo_new >= hi_new - EPS {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!(
+                    "reframed limits invalid: min {:.6} >= max {:.6} (offset {:.6} rad)",
+                    lo_new, hi_new, z64
+                )),
+                offset_rad: Some(z),
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+
+        if lo_new < -MAX_RANGE || hi_new > MAX_RANGE {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!(
+                    "reframed limits [{:.3}, {:.3}] rad exceed ±2π; zero closer to the joint travel range",
+                    lo_new, hi_new
+                )),
+                offset_rad: Some(z),
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+
+        let updated = match section.as_str() {
+            "arm_left" => config.arm_left.as_mut().and_then(|arm| {
+                arm.joints_mut()
+                    .into_iter()
+                    .find(|(n, _)| *n == joint)
+                    .map(|(_, j)| {
+                        j.limits = (lo_new, hi_new);
+                        j.home_rad = 0.0;
+                    })
+            }),
+            "arm_right" => config.arm_right.as_mut().and_then(|arm| {
+                arm.joints_mut()
+                    .into_iter()
+                    .find(|(n, _)| *n == joint)
+                    .map(|(_, j)| {
+                        j.limits = (lo_new, hi_new);
+                        j.home_rad = 0.0;
+                    })
+            }),
+            "waist" => config.waist.as_mut().and_then(|w| {
+                w.get_mut(&joint).map(|j| {
+                    j.limits = (lo_new, hi_new);
+                    j.home_rad = 0.0;
+                })
+            }),
+            _ => None,
+        };
+
+        if updated.is_none() {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!("joint '{}' not found in section '{}'", joint, section)),
+                offset_rad: Some(z),
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+
+        if let Err(e) = config.save(&state.config_path) {
+            return Ok(Json(ZeroReframeHomeResponse {
+                success: false,
+                error: Some(format!("config save failed: {:#}", e)),
+                offset_rad: Some(z),
+                limits_min_rad: None,
+                limits_max_rad: None,
+                home_rad: None,
+            }));
+        }
+
+        (lo_new, hi_new)
+    };
+
+    {
+        let mut arms = state.arms.lock().await;
+        let side = match section.as_str() {
+            "arm_left" => "left",
+            "arm_right" => "right",
+            _ => "",
+        };
+        if let Some(arm) = arms.get_mut(side) {
+            arm.update_joint_limits(&joint, lo_new as f32, hi_new as f32).await;
+            arm.update_joint_home(&joint, 0.0).await;
+        } else if section == "waist" {
+            let motor_arc = {
+                let motors = state.motors.lock().await;
+                motors.get(&can_id).cloned()
+            };
+            if let Some(motor_arc) = motor_arc {
+                let mut m = motor_arc.lock().await;
+                m.set_joint_limits(lo_new as f32, hi_new as f32);
+                m.set_home_rad(0.0);
+            }
+        }
+    }
+
+    info!(
+        section = %section,
+        joint = %joint,
+        can_id,
+        offset_rad = z,
+        lo_new = lo_new,
+        hi_new = hi_new,
+        "encoder zero + limits reframe + home=0"
+    );
+
+    Ok(Json(ZeroReframeHomeResponse {
+        success: true,
+        error: None,
+        offset_rad: Some(z),
+        limits_min_rad: Some(lo_new),
+        limits_max_rad: Some(hi_new),
+        home_rad: Some(0.0),
+    }))
 }
 
 // -- Helpers --

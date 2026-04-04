@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { ArmInfo, CommandResponse, HomeResponse } from '@/lib/api';
 import { startSweep, stopSweep } from '@/lib/api';
-import { useRobotArmPreflight, useRobotArms } from '@/lib/queries';
+import { linkKeys, useRobotArmPreflight, useRobotArms } from '@/lib/queries';
 import {
   useEnableArmMutation,
   useDisableArmMutation,
@@ -14,6 +15,7 @@ import {
   useMoveMotorMutation,
   useZeroMotorMutation,
   useDisableMotorMutation,
+  useZeroReframeHomeMutation,
 } from '@/lib/mutations/robot';
 import { useTelemetryStore } from '@/stores/telemetry';
 import { PoseEditor } from '@/components/PoseEditor';
@@ -309,7 +311,9 @@ function JointSlider({
   const homeMut = useUpdateJointHomeMutation();
   const moveMut = useMoveMotorMutation();
   const zeroMut = useZeroMotorMutation();
+  const zeroReframeMut = useZeroReframeHomeMutation();
   const disableMut = useDisableMotorMutation();
+  const queryClient = useQueryClient();
 
   const [zeroDialogOpen, setZeroDialogOpen] = useState(false);
   const [zeroDialogMode, setZeroDialogMode] = useState<'zero' | 'zero_and_home'>('zero');
@@ -317,6 +321,8 @@ function JointSlider({
 
   const minDeg = (joint.limits[0] * 180) / Math.PI;
   const maxDeg = (joint.limits[1] * 180) / Math.PI;
+  const midRangeDeg = (minDeg + maxDeg) / 2;
+  const rangeSpanDeg = maxDeg - minDeg;
   const currentDeg = motor ? (motor.angle_rad * 180) / Math.PI : null;
   const isOnline = motor?.online ?? false;
   const canMove = isOnline && joint.can_id != null;
@@ -333,6 +339,15 @@ function JointSlider({
     rawDisplayDeg != null
       ? Math.max(minDeg, Math.min(maxDeg, rawDisplayDeg))
       : null;
+
+  /** 0–100 along the track; midpoint of bar = midRangeDeg. */
+  const homeMarkerPct =
+    rangeSpanDeg > 1e-6
+      ? Math.max(
+          0,
+          Math.min(100, ((homeDeg - minDeg) / rangeSpanDeg) * 100),
+        )
+      : 50;
 
   const limitProximity = (() => {
     if (currentDeg == null) return 'normal';
@@ -509,31 +524,38 @@ function JointSlider({
     if (joint.can_id == null) return;
     setZeroInProgress(true);
     try {
-      const zeroRes = await zeroMut.mutateAsync(joint.can_id);
-      if (!zeroRes.success) {
-        toast.error('Zero failed', { description: zeroRes.error });
-        setZeroInProgress(false);
-        return;
-      }
-
       if (zeroDialogMode === 'zero_and_home') {
-        const homeRes = await homeMut.mutateAsync({
+        const res = await zeroReframeMut.mutateAsync({
           section,
           joint: joint.name,
-          homeRad: 0,
         });
-        if (homeRes.success) {
+        if (res.success) {
+          const minDeg =
+            res.limits_min_rad != null
+              ? ((res.limits_min_rad * 180) / Math.PI).toFixed(1)
+              : '?';
+          const maxDeg =
+            res.limits_max_rad != null
+              ? ((res.limits_max_rad * 180) / Math.PI).toFixed(1)
+              : '?';
           toast.success(
-            `${formatJointName(joint.name)}: zeroed & home set to 0°`,
-            { description: 'Current physical position is now 0° and saved as home' },
+            `${formatJointName(joint.name)}: zeroed, home 0°, limits reframed`,
+            {
+              description: `Saved limits now ${minDeg}°–${maxDeg}° (same physical travel as before).`,
+            },
           );
         } else {
-          toast.error('Home save failed after zero', { description: homeRes.error });
+          toast.error('Zero & set home failed', { description: res.error });
         }
       } else {
-        toast.success(`Encoder zeroed for ${formatJointName(joint.name)}`, {
-          description: 'Current physical position is now 0°',
-        });
+        const zeroRes = await zeroMut.mutateAsync(joint.can_id);
+        if (zeroRes.success) {
+          toast.success(`Encoder zeroed for ${formatJointName(joint.name)}`, {
+            description: 'Current physical position is now 0°. Joint limits in YAML are unchanged.',
+          });
+        } else {
+          toast.error('Zero failed', { description: zeroRes.error });
+        }
       }
     } catch (e) {
       toast.error('Zero encoder failed', {
@@ -573,6 +595,9 @@ function JointSlider({
     setSweeping(false);
     try {
       await stopSweep(side, joint.name);
+      void queryClient.invalidateQueries({
+        queryKey: linkKeys.armPreflightsRoot(),
+      });
       toast.info(`Sweep stopping for ${formatJointName(joint.name)}`, {
         description: 'Finishing current pass, then returning to home.',
       });
@@ -683,19 +708,46 @@ function JointSlider({
         </div>
       </div>
       <div className={`relative ${sliderTrackClass}`}>
-        <Slider
-          value={displayDeg != null ? [displayDeg] : [0]}
-          min={minDeg}
-          max={maxDeg}
-          step={0.5}
-          disabled={!canMove}
-          onValueChange={handleSliderChange}
-          onValueCommitted={handleSliderCommit}
-        />
+        <div className='relative'>
+          <Slider
+            value={
+              displayDeg != null ? [displayDeg] : [midRangeDeg]
+            }
+            min={minDeg}
+            max={maxDeg}
+            step={0.5}
+            disabled={!canMove}
+            onValueChange={handleSliderChange}
+            onValueCommitted={handleSliderCommit}
+          />
+          {rangeSpanDeg > 1e-6 && (
+            <div
+              className='pointer-events-none absolute inset-x-0 top-1/2 z-10 flex h-3 -translate-y-1/2 items-center'
+              aria-hidden
+            >
+              <div
+                className='absolute h-2.5 w-px rounded-full bg-emerald-400/90 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]'
+                style={{
+                  left: `${homeMarkerPct}%`,
+                  transform: 'translateX(-50%)',
+                }}
+                title={`Home ${homeDeg.toFixed(1)}°`}
+              />
+            </div>
+          )}
+        </div>
         <div className='mt-0.5 flex justify-between text-[10px] text-muted-foreground font-mono'>
-          <span>{minDeg.toFixed(0)}°</span>
-          <span>home: {homeDeg.toFixed(0)}°</span>
-          <span>{maxDeg.toFixed(0)}°</span>
+          <span title='Joint limit (min)'>{minDeg.toFixed(0)}°</span>
+          <span
+            className='text-center tabular-nums'
+            title='Midpoint of configured range (center of slider)'
+          >
+            {midRangeDeg.toFixed(0)}°
+          </span>
+          <span title='Joint limit (max)'>{maxDeg.toFixed(0)}°</span>
+        </div>
+        <div className='mt-0.5 text-center text-[10px] text-muted-foreground font-mono'>
+          <span title='Configured home target'>home: {homeDeg.toFixed(1)}°</span>
         </div>
       </div>
 
@@ -707,6 +759,10 @@ function JointSlider({
             </h5>
             <p className='text-[10px] text-muted-foreground mb-2'>
               Position the joint where you want 0° to be, then zero the encoder.
+              <span className='block mt-1'>
+                <strong>Zero &amp; Set Home</strong> also shifts saved min/max limits by the same
+                amount so 0° stays inside the range (physical travel unchanged).
+              </span>
               {currentDeg != null && (
                 <>
                   {' '}
@@ -772,10 +828,12 @@ function JointSlider({
                   )}
                   {zeroDialogMode === 'zero_and_home' && (
                     <p className='text-muted-foreground text-xs'>
-                      Additionally, 0° will be saved as the home position in{' '}
+                      Saves <strong>home = 0°</strong> and updates{' '}
+                      <strong>min/max limits</strong> in{' '}
                       <code className='text-[10px] bg-muted px-1 py-0.5 rounded'>
                         robot.yaml
-                      </code>.
+                      </code>{' '}
+                      by subtracting this pose (e.g. 5°–160° → ~0°–155° if you zero at ~5°).
                     </p>
                   )}
                 </div>

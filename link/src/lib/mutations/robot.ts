@@ -18,6 +18,11 @@ export function invalidateAfterJointYamlChange(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: linkKeys.armPreflightsRoot() })
 }
 
+/** Preflight reads live joint positions; invalidate after any move that can clear a limit violation. */
+function invalidateArmPreflights(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: linkKeys.armPreflightsRoot() })
+}
+
 export function invalidateMotorDetail(qc: QueryClient, id: number) {
   void qc.invalidateQueries({ queryKey: linkKeys.motor(id) })
 }
@@ -97,6 +102,7 @@ export function useSetArmPoseMutation() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: linkKeys.arms() })
       void qc.invalidateQueries({ queryKey: linkKeys.motors() })
+      invalidateArmPreflights(qc)
     },
   })
 }
@@ -137,6 +143,15 @@ export function useUpdateJointHomeMutation() {
   })
 }
 
+export function useZeroReframeHomeMutation() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ section, joint }: { section: string; joint: string }) =>
+      api.zeroReframeHome(section, joint),
+    onSuccess: () => invalidateAfterJointYamlChange(qc),
+  })
+}
+
 export function useEnableMotorMutation() {
   const qc = useQueryClient()
   return useMutation({
@@ -160,6 +175,7 @@ export function useZeroMotorMutation() {
     onSuccess: (_d, id) => {
       invalidateMotorDetail(qc, id)
       void qc.invalidateQueries({ queryKey: linkKeys.motors() })
+      invalidateArmPreflights(qc)
     },
   })
 }
@@ -178,7 +194,10 @@ export function useMoveMotorMutation() {
       kp?: number
       kd?: number
     }) => api.moveMotor(id, position_rad, kp, kd),
-    onSuccess: (_d, vars) => invalidateMotorDetail(qc, vars.id),
+    onSuccess: (_d, vars) => {
+      invalidateMotorDetail(qc, vars.id)
+      invalidateArmPreflights(qc)
+    },
   })
 }
 
@@ -200,7 +219,10 @@ export function useControlMotorMutation() {
       kd: number
       torque: number
     }) => api.controlMotor(id, position, velocity, kp, kd, torque),
-    onSuccess: (_d, vars) => invalidateMotorDetail(qc, vars.id),
+    onSuccess: (_d, vars) => {
+      invalidateMotorDetail(qc, vars.id)
+      invalidateArmPreflights(qc)
+    },
   })
 }
 
@@ -216,7 +238,10 @@ export function useSpinMotorMutation() {
       velocity_rads: number
       kd?: number
     }) => api.spinMotor(id, velocity_rads, kd),
-    onSuccess: (_d, vars) => invalidateMotorDetail(qc, vars.id),
+    onSuccess: (_d, vars) => {
+      invalidateMotorDetail(qc, vars.id)
+      invalidateArmPreflights(qc)
+    },
   })
 }
 
@@ -225,7 +250,10 @@ export function useTorqueMotorMutation() {
   return useMutation({
     mutationFn: ({ id, torque_nm }: { id: number; torque_nm: number }) =>
       api.torqueMotor(id, torque_nm),
-    onSuccess: (_d, vars) => invalidateMotorDetail(qc, vars.id),
+    onSuccess: (_d, vars) => {
+      invalidateMotorDetail(qc, vars.id)
+      invalidateArmPreflights(qc)
+    },
   })
 }
 
@@ -243,7 +271,10 @@ export function useJogMotorMutation() {
       kp?: number
       kd?: number
     }) => api.jogMotor(id, delta_deg, kp, kd),
-    onSuccess: (_d, vars) => invalidateMotorDetail(qc, vars.id),
+    onSuccess: (_d, vars) => {
+      invalidateMotorDetail(qc, vars.id)
+      invalidateArmPreflights(qc)
+    },
   })
 }
 

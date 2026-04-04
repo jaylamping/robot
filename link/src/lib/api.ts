@@ -278,6 +278,25 @@ export function updateJointHome(
   })
 }
 
+/** Encoder zero + shift saved limits by −offset so home can be 0 in the new frame. */
+export interface ZeroReframeHomeResponse {
+  success: boolean
+  error?: string
+  offset_rad?: number
+  limits_min_rad?: number
+  limits_max_rad?: number
+  home_rad?: number
+}
+
+export function zeroReframeHome(
+  section: string,
+  joint: string,
+): Promise<ZeroReframeHomeResponse> {
+  return fetchJson(`/joints/${section}/${joint}/zero-reframe-home`, {
+    method: 'POST',
+  })
+}
+
 export function getLogs(limit = 200): Promise<LogEntry[]> {
   return fetchJson(`/logs?limit=${limit}`)
 }
