@@ -139,6 +139,11 @@ fn default_recovery_direct_command_within_rad() -> f64 {
     0.22
 }
 
+/// Slack around YAML joint limits for pre-flight / homing gate only (~2°). Does not change Motor clamps.
+fn default_preflight_limit_margin_rad() -> f64 {
+    (2.0_f64).to_radians()
+}
+
 fn default_kp_settle() -> f32 {
     100.0
 }
@@ -229,6 +234,11 @@ pub struct StartupRecoveryConfig {
     /// command zone. Higher = gentler ramp. 0 or 1 = jump immediately to settle gains.
     #[serde(default = "default_settle_ramp_ticks")]
     pub settle_ramp_ticks: u32,
+    /// Extra slack (rad) outside configured joint limits for **pre-flight only**. Joints in this
+    /// band still pass and may home; API/motor hard limits are unchanged. Ignored when the raw
+    /// encoder reading indicates multi-turn accumulation (`|pos| > 2π`), which stays a hard fail.
+    #[serde(default = "default_preflight_limit_margin_rad")]
+    pub preflight_limit_margin_rad: f64,
 }
 
 impl Default for StartupRecoveryConfig {
@@ -259,6 +269,7 @@ impl Default for StartupRecoveryConfig {
             kp_settle: default_kp_settle(),
             kd_settle: default_kd_settle(),
             settle_ramp_ticks: default_settle_ramp_ticks(),
+            preflight_limit_margin_rad: default_preflight_limit_margin_rad(),
         }
     }
 }

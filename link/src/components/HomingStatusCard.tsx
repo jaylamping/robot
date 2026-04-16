@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { useTelemetryStore } from '@/stores/telemetry'
 import type { HomeResponse } from '@/lib/api'
 import { PreflightAlert } from '@/components/PreflightAlert'
+import { PreflightSoftNotice } from '@/components/PreflightSoftNotice'
 import { linkKeys, useRobotArmPreflights } from '@/lib/queries'
 import { useHomeArmMutation } from '@/lib/mutations/robot'
 import { toast } from 'sonner'
@@ -21,6 +22,7 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
   const preflightQueries = useRobotArmPreflights(armSides)
   const homeMut = useHomeArmMutation()
   const [dismissedPreflight, setDismissedPreflight] = useState<Record<string, boolean>>({})
+  const [dismissedSoftPreflight, setDismissedSoftPreflight] = useState<Record<string, boolean>>({})
   const [homeResults, setHomeResults] = useState<Record<string, HomeResponse>>({})
   const [homingSide, setHomingSide] = useState<string | null>(null)
 
@@ -35,12 +37,14 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
       const result = await homeMut.mutateAsync({ side, override: false })
       setHomeResults((prev) => ({ ...prev, [side]: result }))
       if (result.success) {
+        setDismissedSoftPreflight((d) => ({ ...d, [side]: false }))
         toast.success(`${side} arm homed`, {
           description: result.error ?? `${result.joints.length} joints processed`,
         })
       } else if (result.preflight) {
         void qc.invalidateQueries({ queryKey: linkKeys.armPreflight(side) })
         setDismissedPreflight((d) => ({ ...d, [side]: false }))
+        setDismissedSoftPreflight((d) => ({ ...d, [side]: false }))
         toast.error(`${side} arm: pre-flight failed`, { description: result.error })
       } else {
         toast.error(`${side} arm: homing failed`, { description: result.error })
@@ -87,6 +91,11 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
           const pq = preflightQueries[i]
           const pf = pq?.data
           const showPreflight = pf && !pf.pass && !dismissedPreflight[side]
+          const showSoftPreflight =
+            pf &&
+            pf.pass &&
+            pf.joints.some((j) => j.soft_warning != null) &&
+            !dismissedSoftPreflight[side]
           return (
             <div key={side}>
               {showPreflight && (
@@ -94,6 +103,13 @@ export function HomingStatusCard({ armSides }: HomingStatusCardProps) {
                   side={side}
                   preflight={pf}
                   onDismiss={() => setDismissedPreflight((d) => ({ ...d, [side]: true }))}
+                />
+              )}
+              {showSoftPreflight && (
+                <PreflightSoftNotice
+                  side={side}
+                  preflight={pf}
+                  onDismiss={() => setDismissedSoftPreflight((d) => ({ ...d, [side]: true }))}
                 />
               )}
 

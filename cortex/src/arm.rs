@@ -70,6 +70,14 @@ pub struct PreflightViolation {
     pub multiturn: bool,
 }
 
+/// Joint is outside nominal YAML limits but inside pre-flight mechanical slack; homing is allowed.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreflightSoftWarning {
+    pub which_limit: String,
+    pub nominal_exceeded_by_rad: f32,
+    pub nominal_exceeded_by_deg: f32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PreflightJoint {
     pub joint_name: String,
@@ -81,6 +89,7 @@ pub struct PreflightJoint {
     pub limit_max_deg: f32,
     pub home_rad: f32,
     pub violation: Option<PreflightViolation>,
+    pub soft_warning: Option<PreflightSoftWarning>,
     pub online: bool,
 }
 
@@ -196,7 +205,10 @@ impl Arm {
     // -- Pre-flight --
 
     /// Read every joint's encoder position (without enabling) and check against limits.
-    /// Returns `pass: false` if any joint is outside its configured range.
+    ///
+    /// Returns `pass: false` if any joint is outside its configured range plus
+    /// [`StartupRecoveryConfig::preflight_limit_margin_rad`] (unless multi-turn raw position
+    /// indicates encoder wrap). Joints in the slack band get [`PreflightJoint::soft_warning`] only.
     pub async fn preflight_check(&self) -> Result<PreflightResult> {
         let mut joints_result = Vec::new();
         let mut pass = true;
@@ -223,6 +235,7 @@ impl Arm {
                         limit_max_deg: params.limit_max_rad.to_degrees(),
                         home_rad: params.home_rad,
                         violation: None,
+                        soft_warning: None,
                         online: false,
                     });
                     continue;
@@ -237,10 +250,18 @@ impl Arm {
             );
             let pos_deg = pos_joint.to_degrees();
             let mut violation = None;
+            let mut soft_warning = None;
 
             let is_multiturn = pos.abs() > std::f32::consts::TAU;
+            let margin = if is_multiturn {
+                0.0
+            } else {
+                params.recovery.preflight_limit_margin_rad as f32
+            };
+            let eff_min = params.limit_min_rad - margin;
+            let eff_max = params.limit_max_rad + margin;
 
-            if pos_joint < params.limit_min_rad {
+            if pos_joint < eff_min {
                 let exceeded = params.limit_min_rad - pos_joint;
                 pass = false;
                 let suggested_fix = if is_multiturn {
@@ -262,7 +283,7 @@ impl Arm {
                     suggested_fix,
                     multiturn: is_multiturn,
                 });
-            } else if pos_joint > params.limit_max_rad {
+            } else if pos_joint > eff_max {
                 let exceeded = pos_joint - params.limit_max_rad;
                 pass = false;
                 let suggested_fix = if is_multiturn {
@@ -284,6 +305,20 @@ impl Arm {
                     suggested_fix,
                     multiturn: is_multiturn,
                 });
+            } else if !is_multiturn && pos_joint < params.limit_min_rad {
+                let nominal_exceeded = params.limit_min_rad - pos_joint;
+                soft_warning = Some(PreflightSoftWarning {
+                    which_limit: "min".to_string(),
+                    nominal_exceeded_by_rad: nominal_exceeded,
+                    nominal_exceeded_by_deg: nominal_exceeded.to_degrees(),
+                });
+            } else if !is_multiturn && pos_joint > params.limit_max_rad {
+                let nominal_exceeded = pos_joint - params.limit_max_rad;
+                soft_warning = Some(PreflightSoftWarning {
+                    which_limit: "max".to_string(),
+                    nominal_exceeded_by_rad: nominal_exceeded,
+                    nominal_exceeded_by_deg: nominal_exceeded.to_degrees(),
+                });
             }
 
             joints_result.push(PreflightJoint {
@@ -296,6 +331,7 @@ impl Arm {
                 limit_max_deg: params.limit_max_rad.to_degrees(),
                 home_rad: params.home_rad,
                 violation,
+                soft_warning,
                 online: true,
             });
         }

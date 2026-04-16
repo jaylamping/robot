@@ -20,6 +20,7 @@ import {
 import { useTelemetryStore } from '@/stores/telemetry';
 import { PoseEditor } from '@/components/PoseEditor';
 import { PreflightAlert } from '@/components/PreflightAlert';
+import { PreflightSoftNotice } from '@/components/PreflightSoftNotice';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -105,6 +106,7 @@ function ArmsPage() {
 function ArmPanel({ arm }: { arm: ArmInfo }) {
   const [busy, setBusy] = useState(false);
   const [hidePreflightBanner, setHidePreflightBanner] = useState(false);
+  const [hideSoftPreflightNotice, setHideSoftPreflightNotice] = useState(false);
   const [homeResult, setHomeResult] = useState<HomeResponse | null>(null);
   const motors = useTelemetryStore((s) => s.motors);
 
@@ -153,6 +155,7 @@ function ArmPanel({ arm }: { arm: ArmInfo }) {
       });
       setHomeResult(result);
       setHidePreflightBanner(false);
+      setHideSoftPreflightNotice(false);
       if (result.success) {
         const jointSummary = result.joints
           .map(
@@ -232,6 +235,17 @@ function ArmPanel({ arm }: { arm: ArmInfo }) {
             onDismiss={() => setHidePreflightBanner(true)}
           />
         )}
+
+        {preflight &&
+          preflight.pass &&
+          preflight.joints.some((j) => j.soft_warning != null) &&
+          !hideSoftPreflightNotice && (
+            <PreflightSoftNotice
+              side={arm.side}
+              preflight={preflight}
+              onDismiss={() => setHideSoftPreflightNotice(true)}
+            />
+          )}
 
         {homeResult && homeResult.joints.length > 0 && (
           <div className='rounded-md border bg-muted/30 p-3 mb-2'>

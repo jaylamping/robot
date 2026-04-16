@@ -116,6 +116,12 @@ export interface PreflightViolation {
   multiturn: boolean
 }
 
+export interface PreflightSoftWarning {
+  which_limit: string
+  nominal_exceeded_by_rad: number
+  nominal_exceeded_by_deg: number
+}
+
 export interface PreflightJoint {
   joint_name: string
   current_rad: number
@@ -126,6 +132,8 @@ export interface PreflightJoint {
   limit_max_deg: number
   home_rad: number
   violation: PreflightViolation | null
+  /** Present when joint is outside nominal YAML limits but inside pre-flight slack (server ≥ this change). */
+  soft_warning?: PreflightSoftWarning | null
   online: boolean
 }
 
